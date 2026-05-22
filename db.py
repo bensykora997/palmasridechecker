@@ -21,7 +21,21 @@ from datetime import datetime
 
 BLOB_API_HOST = "blob.vercel-storage.com"
 BLOB_PATHNAME = "predictions.json"
-BLOB_API_VERSION = "7"
+# Allow overriding via env in case Vercel bumps the API version
+BLOB_API_VERSION = os.environ.get("BLOB_API_VERSION", "7")
+
+
+def _do_request(req, label):
+    """Wrap urlopen so HTTP error bodies surface in logs instead of just '400'."""
+    try:
+        return urllib.request.urlopen(req, timeout=15)
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+        raise RuntimeError(f"{label} → HTTP {e.code}: {body[:500]}") from e
 
 
 def _token():
@@ -40,7 +54,7 @@ def _list_blobs(prefix):
         "authorization": f"Bearer {_token()}",
         "x-api-version": BLOB_API_VERSION,
     })
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    with _do_request(req, "blob list") as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -74,12 +88,8 @@ def _read_all():
 def _write_all(data):
     """Overwrite predictions.json in the blob store with `data`."""
     body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-    # PUT to upload endpoint. addRandomSuffix=0 keeps pathname deterministic;
-    # allowOverwrite=1 lets us replace the existing object.
-    url = (
-        f"https://{BLOB_API_HOST}/{urllib.parse.quote(BLOB_PATHNAME)}"
-        f"?addRandomSuffix=0&allowOverwrite=1"
-    )
+    # PUT to upload endpoint. All options go in headers (no query params).
+    url = f"https://{BLOB_API_HOST}/{urllib.parse.quote(BLOB_PATHNAME)}"
     req = urllib.request.Request(
         url,
         data=body,
@@ -92,9 +102,10 @@ def _write_all(data):
             "x-allow-overwrite": "1",
             "x-cache-control-max-age": "0",
             "content-type": "application/json",
+            "content-length": str(len(body)),
         },
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with _do_request(req, "blob put") as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
