@@ -92,8 +92,8 @@ def _read_all():
 def _write_all(data):
     """Overwrite predictions.json in the blob store with `data`."""
     body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-    # PUT to upload endpoint. All options go in headers (no query params).
-    url = f"https://{BLOB_API_HOST}/{urllib.parse.quote(BLOB_PATHNAME)}"
+    # PUT to upload endpoint. Some API versions read access from query string.
+    url = f"https://{BLOB_API_HOST}/{urllib.parse.quote(BLOB_PATHNAME)}?access=private"
     req = urllib.request.Request(
         url,
         data=body,
@@ -102,7 +102,10 @@ def _write_all(data):
             "authorization": f"Bearer {_token()}",
             "x-api-version": BLOB_API_VERSION,
             "x-content-type": "application/json",
-            "x-access": "private",
+            # Try multiple header names — Vercel will recognize one of these,
+            # and the others are harmless. The blob API has churned on this.
+            "x-access-mode": "private",
+            "x-blob-access": "private",
             "x-add-random-suffix": "0",
             "x-allow-overwrite": "1",
             "x-cache-control-max-age": "0",
