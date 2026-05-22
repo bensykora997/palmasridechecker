@@ -77,8 +77,12 @@ def _read_all():
     url = _find_url()
     if not url:
         return {"predictions": []}
-    req = urllib.request.Request(url, headers={"user-agent": "PalmasRide/1.0"})
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    # Private stores require auth on the blob URL too.
+    req = urllib.request.Request(url, headers={
+        "user-agent": "PalmasRide/1.0",
+        "authorization": f"Bearer {_token()}",
+    })
+    with _do_request(req, "blob get") as resp:
         try:
             return json.loads(resp.read().decode("utf-8"))
         except json.JSONDecodeError:
@@ -98,6 +102,7 @@ def _write_all(data):
             "authorization": f"Bearer {_token()}",
             "x-api-version": BLOB_API_VERSION,
             "x-content-type": "application/json",
+            "x-access": "private",
             "x-add-random-suffix": "0",
             "x-allow-overwrite": "1",
             "x-cache-control-max-age": "0",
