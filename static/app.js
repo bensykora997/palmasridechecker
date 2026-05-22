@@ -157,7 +157,10 @@ function render(data) {
       </div>
     </div>
 
-    <button class="refresh-btn" onclick="load()">Refresh</button>
+    <div class="actions-row">
+      <button class="refresh-btn" onclick="load()">Refresh</button>
+      <button class="refresh-btn secondary" onclick="loadHistory()">View History</button>
+    </div>
   `;
 
   // Animate score bar
@@ -178,6 +181,99 @@ function renderError(msg) {
       <button class="refresh-btn" style="margin-top:1rem" onclick="load()">Retry</button>
     </div>
   `;
+}
+
+function renderHistory(data) {
+  if (!data.enabled) {
+    main.innerHTML = `
+      <div class="card">
+        <div class="reasons-title">History unavailable</div>
+        <p style="opacity:0.75;font-size:0.9rem;margin-top:0.5rem">
+          ${data.error || "Logging is not configured. Set POSTGRES_URL to enable."}
+        </p>
+        <button class="refresh-btn" style="margin-top:1rem" onclick="load()">Back</button>
+      </div>
+    `;
+    return;
+  }
+
+  const s = data.stats || {};
+  const accuracy = s.accuracy_pct == null ? "—" : `${s.accuracy_pct}%`;
+
+  const rows = (data.predictions || []).map(p => {
+    const date = formatDateES(p.ride_date);
+    const verdict = p.correct === true ? "✓"
+                  : p.correct === false ? "✗"
+                  : "…";
+    const verdictCls = p.correct === true ? "ok"
+                     : p.correct === false ? "bad"
+                     : "pending";
+    const actualBit = p.actual
+      ? (p.actual.rained
+          ? `rained (${p.actual.precip_mm}mm)`
+          : `dry (${p.actual.precip_mm}mm)`)
+      : "pending";
+    return `
+      <div class="history-row">
+        <div class="history-date">
+          <div class="history-verdict ${verdictCls}">${verdict}</div>
+          <div>
+            <div>${date}</div>
+            <div class="history-sub">Predicted: ${p.decision} · Actual: ${actualBit}</div>
+          </div>
+        </div>
+        <div class="history-score" style="color:${scoreColor(p.score)}">${p.score}</div>
+      </div>
+    `;
+  }).join("");
+
+  main.innerHTML = `
+    <div class="card">
+      <div class="reasons-title">Prediction Accuracy</div>
+      <div class="stats-grid">
+        <div class="stat-item">
+          <div class="stat-num">${accuracy}</div>
+          <div class="stat-label">accuracy</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-num">${s.correct || 0}</div>
+          <div class="stat-label">correct</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-num">${s.wrong || 0}</div>
+          <div class="stat-label">wrong</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-num">${s.pending || 0}</div>
+          <div class="stat-label">pending</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="reasons-title">Recent Predictions</div>
+      ${rows || '<p style="opacity:0.6;font-size:0.9rem;margin-top:0.5rem">No predictions logged yet.</p>'}
+    </div>
+
+    <button class="refresh-btn" onclick="load()">Back to Today</button>
+  `;
+}
+
+async function loadHistory() {
+  main.innerHTML = `
+    <div class="loader" id="loader">
+      <div class="spinner"></div>
+      <p>Loading history…</p>
+    </div>
+  `;
+  try {
+    const res = await fetch("/api/history");
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderHistory(data);
+  } catch (err) {
+    renderError(err.message);
+  }
 }
 
 async function load() {

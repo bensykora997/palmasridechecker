@@ -1,1 +1,2 @@
-# No third-party dependencies — standard library only
+# No third-party dependencies — standard library only.
+# Vercel Blob is accessed via HTTP using urllib.

@@ -1,7 +1,8 @@
 import json
 import urllib.request
 import urllib.parse
-from config import PALMAS_CENTER, OPEN_METEO_URL
+from datetime import datetime, timedelta
+from config import PALMAS_CENTER, OPEN_METEO_URL, RIDE_EARLIEST, RIDE_LATEST
 from cache import get_cached, set_cache
 
 
@@ -59,3 +60,54 @@ def fetch_openmeteo():
     except Exception as e:
         print(f"[Open-Meteo] Failed: {e}")
         return {"hours": [], "available": False}
+
+
+def fetch_actuals_for_date(target_date_str):
+    """Fetch observed weather for the ride window on a past date.
+
+    Returns dict with precip_mm, max_wind, rained, or None if unavailable.
+    Uses Open-Meteo's archived/forecast endpoint with past_days. Reliable
+    for dates within the past ~7 days.
+    """
+    target = datetime.strptime(target_date_str, "%Y-%m-%d")
+    days_ago = (datetime.now().date() - target.date()).days
+    if days_ago < 1:
+        return None  # not in the past
+    past_days = max(min(days_ago + 1, 14), 2)
+
+    params = urllib.parse.urlencode({
+        "latitude": PALMAS_CENTER["lat"],
+        "longitude": PALMAS_CENTER["lon"],
+        "hourly": ",".join(["precipitation", "wind_speed_10m"]),
+        "timezone": "America/Bogota",
+        "forecast_days": "1",
+        "past_days": str(past_days),
+    })
+    url = f"{OPEN_METEO_URL}?{params}"
+
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "PalmasRide/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        hourly = data["hourly"]
+        precip_total = 0.0
+        max_wind = 0.0
+        hits = 0
+        for i, t in enumerate(hourly["time"]):
+            if t[:10] != target_date_str:
+                continue
+            hour = int(t[11:13])
+            if RIDE_EARLIEST <= hour <= RIDE_LATEST:
+                precip_total += hourly["precipitation"][i] or 0
+                max_wind = max(max_wind, hourly["wind_speed_10m"][i] or 0)
+                hits += 1
+        if hits == 0:
+            return None
+        return {
+            "precip_mm": round(precip_total, 2),
+            "max_wind": round(max_wind, 1),
+            "rained": precip_total > 0.1,
+        }
+    except Exception as e:
+        print(f"[Open-Meteo actuals] Failed for {target_date_str}: {e}")
+        return None

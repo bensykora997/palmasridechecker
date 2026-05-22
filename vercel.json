@@ -1,6 +1,7 @@
 {
   "routes": [
     { "src": "/api/check", "dest": "/api/check.py" },
+    { "src": "/api/history", "dest": "/api/history.py" },
     { "src": "/api/health", "dest": "/api/health.py" },
     { "src": "/(.*)", "dest": "/static/$1" }
   ]
