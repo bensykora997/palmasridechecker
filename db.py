@@ -1,12 +1,12 @@
 """Vercel Blob-backed logging for predictions and actuals.
 
 Stores the entire prediction log as a single JSON file (`predictions.json`)
-in Vercel Blob. For low volume (≈1 write/day) this is fine — no concurrency
-control needed.
+in a private Vercel Blob store. Read-modify-write on every operation.
+For low volume (≈1 write/day) this is fine — no concurrency control needed.
 
-Env vars required (Vercel auto-injects when the Blob store is linked):
-  - BLOB_READ_WRITE_TOKEN  (always required)
-  - BLOB_STORE_ID          (optional, useful for diagnostics)
+Env vars (Vercel auto-injects when the Blob store is linked):
+  - BLOB_READ_WRITE_TOKEN  (required; store ID is also embedded in this token)
+  - BLOB_STORE_ID          (optional; if absent, derived from the token)
 
 If no token is set, every function becomes a no-op so the app keeps working
 without logging.
@@ -19,14 +19,51 @@ import urllib.parse
 import urllib.error
 from datetime import datetime
 
-BLOB_API_HOST = "blob.vercel-storage.com"
+# New Vercel Blob HTTP API (private stores live here, not blob.vercel-storage.com).
+BLOB_API_BASE = "https://vercel.com/api/blob"
 BLOB_PATHNAME = "predictions.json"
-# Allow overriding via env in case Vercel bumps the API version
-BLOB_API_VERSION = os.environ.get("BLOB_API_VERSION", "7")
+BLOB_API_VERSION = os.environ.get("BLOB_API_VERSION", "12")
+
+
+def _token():
+    return os.environ.get("BLOB_READ_WRITE_TOKEN")
+
+
+def _store_id():
+    """Return the store ID without the `store_` prefix.
+
+    Vercel sets BLOB_STORE_ID like `store_yVKRNAdf4uRCMRTa`. The header
+    `x-vercel-blob-store-id` expects just `yVKRNAdf4uRCMRTa`. If
+    BLOB_STORE_ID isn't set, the token format is
+    `vercel_blob_rw_<storeId>_<secret>` so we can parse it out.
+    """
+    sid = os.environ.get("BLOB_STORE_ID", "")
+    if sid.startswith("store_"):
+        return sid[len("store_"):]
+    if sid:
+        return sid
+    tok = _token() or ""
+    if tok.startswith("vercel_blob_rw_"):
+        parts = tok.split("_")
+        if len(parts) >= 5:
+            return parts[3]
+    return ""
+
+
+def is_enabled():
+    return bool(_token() and _store_id())
+
+
+def _api_headers():
+    return {
+        "authorization": f"Bearer {_token()}",
+        "x-api-version": BLOB_API_VERSION,
+        "x-vercel-blob-store-id": _store_id(),
+    }
 
 
 def _do_request(req, label):
-    """Wrap urlopen so HTTP error bodies surface in logs instead of just '400'."""
+    """Surface API error bodies instead of urllib's bare 'HTTP 400'."""
     try:
         return urllib.request.urlopen(req, timeout=15)
     except urllib.error.HTTPError as e:
@@ -38,28 +75,17 @@ def _do_request(req, label):
         raise RuntimeError(f"{label} → HTTP {e.code}: {body[:500]}") from e
 
 
-def _token():
-    return os.environ.get("BLOB_READ_WRITE_TOKEN")
-
-
-def is_enabled():
-    return bool(_token())
-
-
 # ---------- Low-level blob HTTP helpers ----------
 
 def _list_blobs(prefix):
-    url = f"https://{BLOB_API_HOST}/?prefix={urllib.parse.quote(prefix)}&limit=10"
-    req = urllib.request.Request(url, headers={
-        "authorization": f"Bearer {_token()}",
-        "x-api-version": BLOB_API_VERSION,
-    })
+    url = f"{BLOB_API_BASE}/?prefix={urllib.parse.quote(prefix)}&limit=10"
+    req = urllib.request.Request(url, headers=_api_headers())
     with _do_request(req, "blob list") as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
 def _find_url():
-    """Return the URL of predictions.json in the blob store, or None."""
+    """Return the (downloadable) URL of predictions.json in the store, or None."""
     try:
         data = _list_blobs(BLOB_PATHNAME)
     except urllib.error.HTTPError as e:
@@ -77,7 +103,7 @@ def _read_all():
     url = _find_url()
     if not url:
         return {"predictions": []}
-    # Private stores require auth on the blob URL too.
+    # Private blob URLs require the bearer token to download.
     req = urllib.request.Request(url, headers={
         "user-agent": "PalmasRide/1.0",
         "authorization": f"Bearer {_token()}",
@@ -92,32 +118,23 @@ def _read_all():
 def _write_all(data):
     """Overwrite predictions.json in the blob store with `data`."""
     body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-    # PUT to upload endpoint. Some API versions read access from query string.
-    url = f"https://{BLOB_API_HOST}/{urllib.parse.quote(BLOB_PATHNAME)}?access=private"
-    req = urllib.request.Request(
-        url,
-        data=body,
-        method="PUT",
-        headers={
-            "authorization": f"Bearer {_token()}",
-            "x-api-version": BLOB_API_VERSION,
-            "x-content-type": "application/json",
-            # Try multiple header names — Vercel will recognize one of these,
-            # and the others are harmless. The blob API has churned on this.
-            "x-access-mode": "private",
-            "x-blob-access": "private",
-            "x-add-random-suffix": "0",
-            "x-allow-overwrite": "1",
-            "x-cache-control-max-age": "0",
-            "content-type": "application/json",
-            "content-length": str(len(body)),
-        },
-    )
+    url = f"{BLOB_API_BASE}/?pathname={urllib.parse.quote(BLOB_PATHNAME)}"
+    headers = {
+        **_api_headers(),
+        "x-vercel-blob-access": "private",
+        "x-content-type": "application/json",
+        "x-add-random-suffix": "0",
+        "x-allow-overwrite": "1",
+        "x-cache-control-max-age": "0",
+        "content-type": "application/json",
+        "content-length": str(len(body)),
+    }
+    req = urllib.request.Request(url, data=body, method="PUT", headers=headers)
     with _do_request(req, "blob put") as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
-# ---------- Public API (same shape as the Postgres version) ----------
+# ---------- Public API (same shape as the original) ----------
 
 def init_schema():
     """No-op for blob storage."""
@@ -148,9 +165,8 @@ def save_prediction(ride_date, score, decision, confidence, reasons,
     by_date = _by_date(preds)
     existing = by_date.get(ride_date)
 
-    # Don't overwrite a finalized (evaluated) prediction
     if existing and existing.get("actual") is not None:
-        return
+        return  # already finalized — don't overwrite
 
     entry = {
         "ride_date": ride_date,
@@ -170,11 +186,7 @@ def save_prediction(ride_date, score, decision, confidence, reasons,
         "correct": existing.get("correct") if existing else None,
     }
 
-    if existing:
-        by_date[ride_date] = entry
-    else:
-        by_date[ride_date] = entry
-
+    by_date[ride_date] = entry
     log["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
     _write_all(log)
 
