@@ -1,8 +1,25 @@
 import json
+import math
 import urllib.request
 import ssl
-from config import SIATA_URLS, PALMAS_BOUNDS
+from config import SIATA_URLS, PALMAS_ROUTE, CORRIDOR_RADIUS_KM
 from cache import get_cached, set_cache
+
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    """Great-circle distance between two lat/lon points, in km."""
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(dlon / 2) ** 2)
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def _distance_to_route_km(lat, lon):
+    """Min distance from a point to any waypoint along the Palmas route."""
+    return min(_haversine_km(lat, lon, wlat, wlon) for wlat, wlon in PALMAS_ROUTE)
 
 # Relaxed SSL context for SIATA endpoints
 _ctx = ssl.create_default_context()
@@ -31,29 +48,34 @@ def fetch_pluviometrica():
     if not data or "estaciones" not in data:
         return {"stations": [], "available": False}
 
-    def in_bounds(s, expand=0):
-        lat = float(s.get("latitud", 0))
-        lon = float(s.get("longitud", 0))
-        return (
-            PALMAS_BOUNDS["lat_min"] - expand <= lat <= PALMAS_BOUNDS["lat_max"] + expand
-            and PALMAS_BOUNDS["lon_min"] - expand <= lon <= PALMAS_BOUNDS["lon_max"] + expand
-        )
+    def near_route(s, radius_km):
+        try:
+            lat = float(s.get("latitud", 0))
+            lon = float(s.get("longitud", 0))
+        except (TypeError, ValueError):
+            return False
+        return _distance_to_route_km(lat, lon) <= radius_km
 
     def normalize(s):
+        lat = float(s.get("latitud", 0))
+        lon = float(s.get("longitud", 0))
         return {
             "name": s.get("nombre", ""),
             "code": s.get("codigo"),
-            "lat": float(s.get("latitud", 0)),
-            "lon": float(s.get("longitud", 0)),
+            "lat": lat,
+            "lon": lon,
             "value": float(s.get("valor", -999)),
             "neighborhood": s.get("barrio", ""),
             "city": s.get("ciudad", ""),
+            "distance_km": round(_distance_to_route_km(lat, lon), 2),
         }
 
-    nearby = [s for s in data["estaciones"] if in_bounds(s)]
+    nearby = [s for s in data["estaciones"] if near_route(s, CORRIDOR_RADIUS_KM)]
     expanded = False
+    # Fallback: if nothing within the corridor, widen to 2x radius rather
+    # than silently returning zero stations.
     if not nearby:
-        nearby = [s for s in data["estaciones"] if in_bounds(s, expand=0.05)]
+        nearby = [s for s in data["estaciones"] if near_route(s, CORRIDOR_RADIUS_KM * 2)]
         expanded = True
 
     return {
