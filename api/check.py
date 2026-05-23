@@ -6,12 +6,13 @@ import json
 from http.server import BaseHTTPRequestHandler
 from fetch_siata import fetch_pluviometrica, fetch_radar, fetch_wrf_forecast
 from fetch_openmeteo import fetch_openmeteo, fetch_actuals_for_date
+from fetch_air import fetch_air_quality
 from analyze import (
     analyze_radar, analyze_stations, analyze_wrf,
     get_time_window, analyze_road_conditions, compute_score,
     get_tomorrow_date,
 )
-from config import RIDE_EARLIEST, RIDE_LATEST
+from config import RIDE_EARLIEST, RIDE_LATEST, PALMAS_ROUTE
 from timeutil import today_str
 import db
 
@@ -46,6 +47,7 @@ def build_result():
     radar = fetch_radar()
     wrf = fetch_wrf_forecast()
     open_meteo = fetch_openmeteo()
+    air = fetch_air_quality()
 
     radar_analysis = analyze_radar(radar)
     station_analysis = analyze_stations(pluvio)
@@ -82,6 +84,29 @@ def build_result():
             },
             "wrf_forecast": {"available": wrf_analysis.get("available", False)},
             "open_meteo": {"available": open_meteo["available"]},
+        },
+        # Extra data shown only in the "More details" view — not factored into the score.
+        "details": {
+            "radar": {
+                "frames": radar.get("frames", [])[-12:],   # last ~12 frames is plenty for the loop
+                "bounds": radar.get("bounds"),
+                "available": radar.get("available", False),
+            },
+            "stations": [
+                {
+                    "name": s["name"],
+                    "lat": s["lat"],
+                    "lon": s["lon"],
+                    "value": s["value"],
+                    "neighborhood": s.get("neighborhood", ""),
+                    "distance_km": s.get("distance_km"),
+                    "raining": s["value"] > 0 and s["value"] != -999,
+                    "offline": s["value"] == -999,
+                }
+                for s in pluvio.get("stations", [])
+            ],
+            "route": [[lat, lon] for lat, lon in PALMAS_ROUTE],
+            "air_quality": air,
         },
     }
 

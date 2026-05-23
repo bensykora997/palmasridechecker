@@ -157,11 +157,17 @@ function render(data) {
       </div>
     </div>
 
+    <div id="details-slot"></div>
+
     <div class="actions-row">
       <button class="refresh-btn" onclick="load()">Refresh</button>
-      <button class="refresh-btn secondary" onclick="loadHistory()">View History</button>
+      <button class="refresh-btn secondary" id="detailsBtn" onclick="toggleDetails()">More Details</button>
+      <button class="refresh-btn secondary" onclick="loadHistory()">History</button>
     </div>
   `;
+
+  // Stash data for the details view to use
+  window.__lastData = data;
 
   // Animate score bar
   requestAnimationFrame(() => {
@@ -181,6 +187,145 @@ function renderError(msg) {
       <button class="refresh-btn" style="margin-top:1rem" onclick="load()">Retry</button>
     </div>
   `;
+}
+
+// ---------- More Details (radar + map + AQI) ----------
+
+let __radarTimer = null;
+let __miniMap = null;
+
+function toggleDetails() {
+  const slot = document.getElementById("details-slot");
+  const btn = document.getElementById("detailsBtn");
+  if (!slot) return;
+  if (slot.dataset.open === "1") {
+    closeDetails();
+    btn.textContent = "More Details";
+  } else {
+    renderDetails(window.__lastData);
+    slot.dataset.open = "1";
+    btn.textContent = "Hide Details";
+  }
+}
+
+function closeDetails() {
+  const slot = document.getElementById("details-slot");
+  if (!slot) return;
+  if (__radarTimer) { clearInterval(__radarTimer); __radarTimer = null; }
+  if (__miniMap) { __miniMap.remove(); __miniMap = null; }
+  slot.innerHTML = "";
+  slot.dataset.open = "0";
+}
+
+function aqiColor(tier) {
+  return {
+    good: "#2ecc71",
+    moderate: "#f1c40f",
+    usg: "#f0a030",
+    unhealthy: "#e74c3c",
+    very_unhealthy: "#9b59b6",
+    hazardous: "#7b241c",
+  }[tier] || "#888";
+}
+
+function renderDetails(data) {
+  const slot = document.getElementById("details-slot");
+  const d = (data && data.details) || {};
+  const radar = d.radar || {};
+  const stations = d.stations || [];
+  const route = d.route || [];
+  const aqi = d.air_quality || {};
+
+  slot.innerHTML = `
+    <div class="card details-card">
+      <div class="reasons-title">Air Quality</div>
+      ${aqi.available ? `
+        <div class="aqi-row">
+          <div class="aqi-pill" style="background:${aqiColor(aqi.tier)}">${aqi.us_aqi ?? "—"}</div>
+          <div>
+            <div class="aqi-label">${aqi.label || "—"}</div>
+            <div class="aqi-sub">PM2.5: ${aqi.pm2_5 ?? "—"} µg/m³ · PM10: ${aqi.pm10 ?? "—"} µg/m³ · EAQI: ${aqi.european_aqi ?? "—"}</div>
+          </div>
+        </div>
+        <div class="aqi-note">Not factored into the ride score.</div>
+      ` : `<p style="opacity:0.6;font-size:0.9rem">Air quality data unavailable.</p>`}
+    </div>
+
+    <div class="card details-card">
+      <div class="reasons-title">Radar</div>
+      ${radar.available && radar.frames && radar.frames.length ? `
+        <div class="radar-wrap">
+          <img id="radarImg" class="radar-img" alt="SIATA radar frame">
+          <div id="radarTime" class="radar-time"></div>
+        </div>
+      ` : `<p style="opacity:0.6;font-size:0.9rem">Radar unavailable.</p>`}
+    </div>
+
+    <div class="card details-card">
+      <div class="reasons-title">Stations on the Climb</div>
+      <div id="mini-map" class="mini-map"></div>
+      <div class="map-legend">
+        <span><span class="map-dot raining"></span> Raining</span>
+        <span><span class="map-dot dry"></span> Dry</span>
+        <span><span class="map-dot offline"></span> Offline</span>
+        <span><span class="map-line"></span> Route</span>
+      </div>
+    </div>
+  `;
+
+  // Start radar animation
+  if (radar.available && radar.frames && radar.frames.length) {
+    const frames = radar.frames;
+    const img = document.getElementById("radarImg");
+    const timeLabel = document.getElementById("radarTime");
+    let i = 0;
+    const tick = () => {
+      const f = frames[i % frames.length];
+      img.src = f.image;
+      timeLabel.textContent = f.time;
+      i++;
+    };
+    tick();
+    __radarTimer = setInterval(tick, 600);
+  }
+
+  // Initialize the Leaflet map. Wait for Leaflet if it hasn't loaded yet.
+  const initMap = () => {
+    if (typeof L === "undefined") return setTimeout(initMap, 100);
+    const mapEl = document.getElementById("mini-map");
+    if (!mapEl) return;
+
+    // Center on the middle of the route waypoints
+    const midLat = route.length ? route[Math.floor(route.length/2)][0] : 6.20;
+    const midLon = route.length ? route[Math.floor(route.length/2)][1] : -75.50;
+
+    __miniMap = L.map(mapEl, { zoomControl: true, scrollWheelZoom: false })
+                 .setView([midLat, midLon], 13);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: '© OpenStreetMap',
+      maxZoom: 18,
+    }).addTo(__miniMap);
+
+    if (route.length) {
+      L.polyline(route, { color: "#f0a030", weight: 4, opacity: 0.85 }).addTo(__miniMap);
+    }
+
+    stations.forEach(s => {
+      const color = s.offline ? "#888" : (s.raining ? "#4aa8ff" : "#2ecc71");
+      const dot = L.circleMarker([s.lat, s.lon], {
+        radius: 7, color: "#000", weight: 1, fillColor: color, fillOpacity: 0.9,
+      }).addTo(__miniMap);
+      const valStr = s.offline ? "offline" : `${s.value} mm`;
+      dot.bindPopup(`<b>${s.name}</b><br>${s.neighborhood || ""}<br>Rain: ${valStr}<br>${s.distance_km} km from route`);
+    });
+
+    // Fit to all markers + route
+    const bounds = [];
+    route.forEach(p => bounds.push(p));
+    stations.forEach(s => bounds.push([s.lat, s.lon]));
+    if (bounds.length) __miniMap.fitBounds(bounds, { padding: [20, 20] });
+  };
+  initMap();
 }
 
 function renderHistory(data) {
