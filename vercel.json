@@ -7,15 +7,7 @@
     { "src": "/(.*)", "dest": "/static/$1" }
   ],
   "crons": [
-    {
-      "//": "20:00 Bogota the night before — logs tomorrow's prediction",
-      "path": "/api/cron",
-      "schedule": "0 1 * * *"
-    },
-    {
-      "//": "07:00 Bogota the morning after — backfills the ride that just finished",
-      "path": "/api/cron",
-      "schedule": "0 12 * * *"
-    }
+    { "path": "/api/cron", "schedule": "0 1 * * *" },
+    { "path": "/api/cron", "schedule": "0 12 * * *" }
   ]
 }
