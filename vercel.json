@@ -2,18 +2,19 @@
   "routes": [
     { "src": "/api/check", "dest": "/api/check.py" },
     { "src": "/api/history", "dest": "/api/history.py" },
+    { "src": "/api/cron", "dest": "/api/cron.py" },
     { "src": "/api/health", "dest": "/api/health.py" },
     { "src": "/(.*)", "dest": "/static/$1" }
   ],
   "crons": [
     {
       "//": "20:00 Bogota the night before — logs tomorrow's prediction",
-      "path": "/api/check",
+      "path": "/api/cron",
       "schedule": "0 1 * * *"
     },
     {
-      "//": "07:00 Bogota the morning after — backfills actual weather for the ride that just happened",
-      "path": "/api/history",
+      "//": "07:00 Bogota the morning after — backfills the ride that just finished",
+      "path": "/api/cron",
       "schedule": "0 12 * * *"
     }
   ]
