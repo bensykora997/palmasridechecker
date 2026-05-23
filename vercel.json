@@ -12,9 +12,9 @@
       "schedule": "0 1 * * *"
     },
     {
-      "//": "08:00 Bogota the morning after — backfills actual weather for the ride that just happened",
+      "//": "07:00 Bogota the morning after — backfills actual weather for the ride that just happened",
       "path": "/api/history",
-      "schedule": "0 13 * * *"
+      "schedule": "0 12 * * *"
     }
   ]
 }

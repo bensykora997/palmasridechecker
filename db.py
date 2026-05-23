@@ -213,9 +213,12 @@ def pending_actuals():
         return []
     now = now_bogota()
     today = now.strftime("%Y-%m-%d")
-    # Ride window ends at RIDE_LATEST + 0.5 hour (the +1 hour slot covers 7:00–7:59).
-    # Wait until after 08:00 Bogota to ensure Open-Meteo has the final hour.
-    window_closed_today = now.hour >= RIDE_LATEST + 1
+    # Allow same-day backfill from 07:00 Bogota onward. The ride window
+    # technically ends at 07:30, but by 07:00 we have observations for
+    # the 05:00 and 06:00 hours which cover most of the window. The
+    # 07:00 hour observation may not yet be published — fetch_actuals
+    # handles partial data fine (it averages over whatever hours exist).
+    window_closed_today = now.hour >= RIDE_LATEST
     log = _read_all()
     out = []
     for p in log.get("predictions", []):
