@@ -12,7 +12,7 @@ from analyze import (
     get_time_window, analyze_road_conditions, compute_score,
     get_tomorrow_date,
 )
-from config import RIDE_EARLIEST, RIDE_LATEST, PALMAS_ROUTE
+from config import RIDE_EARLIEST, RIDE_LATEST, PALMAS_ROUTE_SEGMENTS
 from timeutil import today_str
 import db
 
@@ -105,7 +105,7 @@ def build_result():
                 }
                 for s in pluvio.get("stations", [])
             ],
-            "route": [[lat, lon] for lat, lon in PALMAS_ROUTE],
+            "route_segments": [[[lat, lon] for lat, lon in seg] for seg in PALMAS_ROUTE_SEGMENTS],
             "air_quality": air,
         },
     }

@@ -193,6 +193,7 @@ function renderError(msg) {
 
 let __radarTimer = null;
 let __miniMap = null;
+let __radarMap = null;
 
 function toggleDetails() {
   const slot = document.getElementById("details-slot");
@@ -213,6 +214,7 @@ function closeDetails() {
   if (!slot) return;
   if (__radarTimer) { clearInterval(__radarTimer); __radarTimer = null; }
   if (__miniMap) { __miniMap.remove(); __miniMap = null; }
+  if (__radarMap) { __radarMap.remove(); __radarMap = null; }
   slot.innerHTML = "";
   slot.dataset.open = "0";
 }
@@ -233,7 +235,7 @@ function renderDetails(data) {
   const d = (data && data.details) || {};
   const radar = d.radar || {};
   const stations = d.stations || [];
-  const route = d.route || [];
+  const routeSegments = d.route_segments || [];
   const aqi = d.air_quality || {};
 
   slot.innerHTML = `
@@ -254,10 +256,8 @@ function renderDetails(data) {
     <div class="card details-card">
       <div class="reasons-title">Radar</div>
       ${radar.available && radar.frames && radar.frames.length ? `
-        <div class="radar-wrap">
-          <img id="radarImg" class="radar-img" alt="SIATA radar frame">
-          <div id="radarTime" class="radar-time"></div>
-        </div>
+        <div id="radar-map" class="radar-map"></div>
+        <div id="radarTime" class="radar-time-inline"></div>
       ` : `<p style="opacity:0.6;font-size:0.9rem">Radar unavailable.</p>`}
     </div>
 
@@ -273,42 +273,28 @@ function renderDetails(data) {
     </div>
   `;
 
-  // Start radar animation
-  if (radar.available && radar.frames && radar.frames.length) {
-    const frames = radar.frames;
-    const img = document.getElementById("radarImg");
-    const timeLabel = document.getElementById("radarTime");
-    let i = 0;
-    const tick = () => {
-      const f = frames[i % frames.length];
-      img.src = f.image;
-      timeLabel.textContent = f.time;
-      i++;
-    };
-    tick();
-    __radarTimer = setInterval(tick, 600);
-  }
+  const allRoutePts = routeSegments.flat();
 
-  // Initialize the Leaflet map. Wait for Leaflet if it hasn't loaded yet.
-  const initMap = () => {
-    if (typeof L === "undefined") return setTimeout(initMap, 100);
+  const drawRoute = (map) => {
+    routeSegments.forEach(seg => {
+      if (seg.length >= 2) {
+        L.polyline(seg, { color: "#f0a030", weight: 4, opacity: 0.85 }).addTo(map);
+      }
+    });
+  };
+
+  // Initialize the station map. Wait for Leaflet if it hasn't loaded yet.
+  const initStationMap = () => {
+    if (typeof L === "undefined") return setTimeout(initStationMap, 100);
     const mapEl = document.getElementById("mini-map");
     if (!mapEl) return;
 
-    // Center on the middle of the route waypoints
-    const midLat = route.length ? route[Math.floor(route.length/2)][0] : 6.20;
-    const midLon = route.length ? route[Math.floor(route.length/2)][1] : -75.50;
-
-    __miniMap = L.map(mapEl, { zoomControl: true, scrollWheelZoom: false })
-                 .setView([midLat, midLon], 13);
+    __miniMap = L.map(mapEl, { zoomControl: true, scrollWheelZoom: false }).setView([6.19, -75.52], 13);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: '© OpenStreetMap',
-      maxZoom: 18,
+      attribution: '© OpenStreetMap', maxZoom: 18,
     }).addTo(__miniMap);
 
-    if (route.length) {
-      L.polyline(route, { color: "#f0a030", weight: 4, opacity: 0.85 }).addTo(__miniMap);
-    }
+    drawRoute(__miniMap);
 
     stations.forEach(s => {
       const color = s.offline ? "#888" : (s.raining ? "#4aa8ff" : "#2ecc71");
@@ -319,13 +305,63 @@ function renderDetails(data) {
       dot.bindPopup(`<b>${s.name}</b><br>${s.neighborhood || ""}<br>Rain: ${valStr}<br>${s.distance_km} km from route`);
     });
 
-    // Fit to all markers + route
     const bounds = [];
-    route.forEach(p => bounds.push(p));
+    allRoutePts.forEach(p => bounds.push(p));
     stations.forEach(s => bounds.push([s.lat, s.lon]));
     if (bounds.length) __miniMap.fitBounds(bounds, { padding: [20, 20] });
   };
-  initMap();
+
+  // Initialize the radar map (PNG overlay using SIATA bounds)
+  const initRadarMap = () => {
+    if (!radar.available || !radar.frames || !radar.frames.length) return;
+    if (typeof L === "undefined") return setTimeout(initRadarMap, 100);
+    const mapEl = document.getElementById("radar-map");
+    if (!mapEl) return;
+
+    const b = radar.bounds || {};
+    const radarBounds = (b.north != null && b.south != null && b.east != null && b.west != null)
+      ? [[b.south, b.west], [b.north, b.east]]
+      : null;
+
+    __radarMap = L.map(mapEl, { zoomControl: true, scrollWheelZoom: false }).setView([6.19, -75.55], 9);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: '© OpenStreetMap', maxZoom: 14,
+    }).addTo(__radarMap);
+
+    drawRoute(__radarMap);
+
+    let overlay = null;
+    if (radarBounds) {
+      overlay = L.imageOverlay(radar.frames[0].image, radarBounds, { opacity: 0.65 }).addTo(__radarMap);
+    }
+
+    // Zoom to the climb area (with a buffer) rather than full radar coverage
+    if (allRoutePts.length) {
+      const lats = allRoutePts.map(p => p[0]);
+      const lons = allRoutePts.map(p => p[1]);
+      const buf = 0.04;
+      __radarMap.fitBounds([
+        [Math.min(...lats) - buf, Math.min(...lons) - buf],
+        [Math.max(...lats) + buf, Math.max(...lons) + buf],
+      ]);
+    } else if (radarBounds) {
+      __radarMap.fitBounds(radarBounds);
+    }
+
+    const timeLabel = document.getElementById("radarTime");
+    let i = 0;
+    const tick = () => {
+      const f = radar.frames[i % radar.frames.length];
+      if (overlay) overlay.setUrl(f.image);
+      if (timeLabel) timeLabel.textContent = f.time;
+      i++;
+    };
+    tick();
+    __radarTimer = setInterval(tick, 600);
+  };
+
+  initStationMap();
+  initRadarMap();
 }
 
 function renderHistory(data) {

@@ -1,23 +1,17 @@
-# Waypoints along the Las Palmas climb, from the lower section near
-# Las Palmas neighborhood up to Alto de Palmas. Stations are filtered
-# by distance to the nearest waypoint (see CORRIDOR_RADIUS_KM).
-PALMAS_ROUTE = [
-    (6.2242, -75.5371),  # Seminario Redemptoris area (Las Palmas, start)
-    (6.2200, -75.5350),
-    (6.2150, -75.5300),
-    (6.2100, -75.5230),
-    (6.2050, -75.5150),
-    (6.1980, -75.5070),
-    (6.1900, -75.4980),
-    (6.1820, -75.4900),
-    (6.1750, -75.4820),  # Alto de Palmas (summit)
-]
+# Geometry of Avenida de Las Palmas pulled from OpenStreetMap
+# (way ref=56). PALMAS_ROUTE_SEGMENTS is a list of ordered segments
+# suitable for drawing on a map. PALMAS_ROUTE is the flattened set of
+# waypoints used for corridor-distance filtering.
+from palmas_route_data import ROUTE_SEGMENTS as PALMAS_ROUTE_SEGMENTS
+
+PALMAS_ROUTE = [pt for seg in PALMAS_ROUTE_SEGMENTS for pt in seg]
 
 # Maximum distance (km) from any waypoint for a SIATA station to be
-# considered "on Palmas". 2.5 km includes all stations directly on or
-# adjacent to the road and excludes obvious off-route ones like Pan de
-# Azucar and Guarne.
-CORRIDOR_RADIUS_KM = 2.5
+# considered "on Palmas". With dense OSM waypoints this can be much
+# tighter than the original 2.5 km — 1.5 km cleanly captures stations
+# directly on the road or in adjacent neighborhoods, and excludes
+# nearby-but-different microclimate areas.
+CORRIDOR_RADIUS_KM = 1.5
 
 # Palmas center for Open-Meteo queries (no change in behavior)
 PALMAS_CENTER = {"lat": 6.20, "lon": -75.50}
