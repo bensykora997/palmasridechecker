@@ -3,7 +3,6 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 from fetch_siata import fetch_pluviometrica, fetch_radar, fetch_wrf_forecast
 from fetch_openmeteo import fetch_openmeteo, fetch_actuals_for_date
@@ -13,6 +12,7 @@ from analyze import (
     get_tomorrow_date,
 )
 from config import RIDE_EARLIEST, RIDE_LATEST
+from timeutil import today_str
 import db
 
 
@@ -31,7 +31,7 @@ def _summarize_forecast(open_meteo):
     max_wind = max(h["wind_speed"] for h in morning)
     avg_hum = sum(h["humidity"] for h in morning) / len(morning)
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = today_str()
     pre_ride = [
         h for h in open_meteo["hours"]
         if (h["date"] == today and h["hour"] >= 20)

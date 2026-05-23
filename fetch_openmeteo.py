@@ -4,6 +4,7 @@ import urllib.parse
 from datetime import datetime, timedelta
 from config import PALMAS_CENTER, OPEN_METEO_URL, RIDE_EARLIEST, RIDE_LATEST
 from cache import get_cached, set_cache
+from timeutil import today_date
 
 
 def fetch_openmeteo():
@@ -70,10 +71,12 @@ def fetch_actuals_for_date(target_date_str):
     for dates within the past ~7 days.
     """
     target = datetime.strptime(target_date_str, "%Y-%m-%d")
-    days_ago = (datetime.now().date() - target.date()).days
-    if days_ago < 1:
-        return None  # not in the past
-    past_days = max(min(days_ago + 1, 14), 2)
+    days_ago = (today_date() - target.date()).days
+    if days_ago < 0:
+        return None  # future date, no observations yet
+    # past_days must include the target date; forecast endpoint always
+    # serves observations for the current day's past hours.
+    past_days = max(min(days_ago + 1, 14), 1)
 
     params = urllib.parse.urlencode({
         "latitude": PALMAS_CENTER["lat"],

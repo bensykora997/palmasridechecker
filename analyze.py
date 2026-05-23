@@ -1,9 +1,10 @@
 from datetime import datetime, timedelta
 from config import SCORING, RIDE_EARLIEST, RIDE_LATEST, RIDE_WINDOW_LABEL
+from timeutil import now_bogota, today_str, tomorrow_str
 
 
 def get_tomorrow_date():
-    return (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    return tomorrow_str()
 
 
 def fmt_hour(h):
@@ -17,8 +18,9 @@ def analyze_radar(radar):
 
     last = radar["frames"][-1]
     try:
+        # SIATA timestamps are local Bogota time, so compare in Bogota.
         last_time = datetime.strptime(last["time"], "%Y-%m-%d %H:%M")
-        age_min = (datetime.now() - last_time).total_seconds() / 60
+        age_min = (now_bogota().replace(tzinfo=None) - last_time).total_seconds() / 60
     except Exception:
         age_min = 999
 
@@ -121,7 +123,7 @@ def analyze_road_conditions(open_meteo, station_analysis):
     if open_meteo["available"] and open_meteo["hours"]:
         tomorrow = get_tomorrow_date()
         # Hours leading up to ride: previous evening + overnight (23:00 today through 04:00 tomorrow)
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = today_str()
         pre_ride = [
             h for h in open_meteo["hours"]
             if (h["date"] == today and h["hour"] >= 20)

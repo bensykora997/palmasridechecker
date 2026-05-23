@@ -18,6 +18,8 @@ import urllib.request
 import urllib.parse
 import urllib.error
 from datetime import datetime
+from config import RIDE_LATEST
+from timeutil import today_str, now_bogota
 
 # New Vercel Blob HTTP API (private stores live here, not blob.vercel-storage.com).
 BLOB_API_BASE = "https://vercel.com/api/blob"
@@ -85,7 +87,15 @@ def _list_blobs(prefix):
 
 
 def _find_url():
-    """Return the (downloadable) URL of predictions.json in the store, or None."""
+    """Return a CDN-cache-bypassing URL for predictions.json, or None.
+
+    Vercel Blob serves the blob URL through a CDN that caches for up to
+    60 seconds even with `cache-control: private`, which causes stale
+    read-after-write. The list endpoint (vercel.com/api/blob) bypasses
+    that CDN and always returns the latest etag, so we use the etag as
+    a cache-buster query string. Since the etag changes on every write,
+    the cache key changes too and we get fresh content automatically.
+    """
     try:
         data = _list_blobs(BLOB_PATHNAME)
     except urllib.error.HTTPError as e:
@@ -94,7 +104,12 @@ def _find_url():
         raise
     for b in data.get("blobs", []):
         if b.get("pathname") == BLOB_PATHNAME:
-            return b.get("url")
+            base = b.get("url")
+            etag = (b.get("etag") or "").strip('"')
+            if base and etag:
+                sep = "&" if "?" in base else "?"
+                return f"{base}{sep}v={etag}"
+            return base
     return None
 
 
@@ -192,15 +207,26 @@ def save_prediction(ride_date, score, decision, confidence, reasons,
 
 
 def pending_actuals():
-    """Return ride_dates with a prediction but no actuals yet (and in the past)."""
+    """Return ride_dates with a prediction but no actuals yet, where the
+    ride window has already finished (past day, or today after RIDE_LATEST)."""
     if not is_enabled():
         return []
-    today = datetime.now().strftime("%Y-%m-%d")
+    now = now_bogota()
+    today = now.strftime("%Y-%m-%d")
+    # Ride window ends at RIDE_LATEST + 0.5 hour (the +1 hour slot covers 7:00–7:59).
+    # Wait until after 08:00 Bogota to ensure Open-Meteo has the final hour.
+    window_closed_today = now.hour >= RIDE_LATEST + 1
     log = _read_all()
-    return [
-        p["ride_date"] for p in log.get("predictions", [])
-        if p.get("actual") is None and p["ride_date"] < today
-    ]
+    out = []
+    for p in log.get("predictions", []):
+        if p.get("actual") is not None:
+            continue
+        rd = p["ride_date"]
+        if rd < today:
+            out.append(rd)
+        elif rd == today and window_closed_today:
+            out.append(rd)
+    return out
 
 
 def save_actuals(ride_date, actual_precip_mm, actual_max_wind, actual_rained):

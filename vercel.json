@@ -4,5 +4,17 @@
     { "src": "/api/history", "dest": "/api/history.py" },
     { "src": "/api/health", "dest": "/api/health.py" },
     { "src": "/(.*)", "dest": "/static/$1" }
+  ],
+  "crons": [
+    {
+      "//": "20:00 Bogota the night before — logs tomorrow's prediction",
+      "path": "/api/check",
+      "schedule": "0 1 * * *"
+    },
+    {
+      "//": "08:00 Bogota the morning after — backfills actual weather for the ride that just happened",
+      "path": "/api/history",
+      "schedule": "0 13 * * *"
+    }
   ]
 }
