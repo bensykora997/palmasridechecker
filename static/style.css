@@ -550,3 +550,12 @@ body {
   font-size: 0.8rem;
   padding: 0.7rem 0.8rem;
 }
+
+/* "Last updated" stamp under the cards */
+.updated-row {
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 1rem;
+  font-variant-numeric: tabular-nums;
+}

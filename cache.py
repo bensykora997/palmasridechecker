@@ -16,3 +16,8 @@ def get_cached(key):
 
 def set_cache(key, data):
     _store[key] = {"data": data, "ts": time.time()}
+
+
+def clear_cache():
+    """Drop all cached entries. Used when the user explicitly requests fresh data."""
+    _store.clear()

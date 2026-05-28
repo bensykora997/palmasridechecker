@@ -148,10 +148,18 @@ def build_result():
 
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        # If the caller asks for fresh data, drop the in-memory cache so the
+        # next fetchers go straight to the source instead of replaying a
+        # cached response from a warm function instance.
+        if "fresh=1" in (self.path or ""):
+            from cache import clear_cache
+            clear_cache()
         data = build_result()
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
+        # Belt-and-braces: tell intermediaries never to cache this response
+        self.send_header("Cache-Control", "no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(body)

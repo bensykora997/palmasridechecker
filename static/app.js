@@ -60,6 +60,8 @@ function render(data) {
   const ds = data.data_sources;
   const road = data.road_conditions || { condition: "unknown", detail: "", factors: [] };
   const vibe = getVibe(data.score);
+  const now = new Date();
+  const updatedAt = now.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
   main.innerHTML = `
     <div class="card">
@@ -159,8 +161,10 @@ function render(data) {
 
     <div id="details-slot"></div>
 
+    <div class="updated-row">Last updated: ${updatedAt}</div>
+
     <div class="actions-row">
-      <button class="refresh-btn" onclick="load()">Refresh</button>
+      <button class="refresh-btn" onclick="refresh()">Refresh</button>
       <button class="refresh-btn secondary" id="detailsBtn" onclick="toggleDetails()">More Details</button>
       <button class="refresh-btn secondary" onclick="loadHistory()">History</button>
     </div>
@@ -184,7 +188,7 @@ function renderError(msg) {
     <div class="error-card">
       <p>Failed to load data</p>
       <p style="font-size:0.85rem;margin-top:0.5rem;opacity:0.7">${msg}</p>
-      <button class="refresh-btn" style="margin-top:1rem" onclick="load()">Retry</button>
+      <button class="refresh-btn" style="margin-top:1rem" onclick="refresh()">Retry</button>
     </div>
   `;
 }
@@ -457,7 +461,7 @@ async function loadHistory() {
   }
 }
 
-async function load() {
+async function load(forceFresh = false) {
   main.innerHTML = `
     <div class="loader" id="loader">
       <div class="spinner"></div>
@@ -466,7 +470,13 @@ async function load() {
   `;
 
   try {
-    const res = await fetch("/api/check");
+    // forceFresh: append a cache-buster and ?fresh=1 so the server skips its
+    // in-memory cache. Plain page-load uses the default (cached) path so the
+    // first paint is fast.
+    const url = forceFresh
+      ? `/api/check?fresh=1&_=${Date.now()}`
+      : "/api/check";
+    const res = await fetch(url, { cache: forceFresh ? "no-store" : "default" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     render(data);
@@ -474,5 +484,8 @@ async function load() {
     renderError(err.message);
   }
 }
+
+// Refresh button always forces a fresh fetch
+function refresh() { return load(true); }
 
 load();
