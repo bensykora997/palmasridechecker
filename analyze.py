@@ -32,20 +32,37 @@ def analyze_radar(radar):
     }
 
 
+# SIATA pluvio stations often report sub-millimeter "noise" values
+# (e.g. 0.02 mm) that don't correspond to actual rainfall. Use the same
+# 0.1 mm threshold we use for Open-Meteo precipitation elsewhere so a
+# stuck sensor on one station can't single-handedly flip the score.
+RAIN_THRESHOLD_MM = 0.1
+
+
 def analyze_stations(pluvio):
     """Check if any nearby SIATA stations show active rainfall."""
     if not pluvio["available"] or not pluvio["stations"]:
         return {"raining": False, "station_count": 0, "offline_count": 0, "active_stations": [], "reason": "No nearby stations"}
 
-    active = [s for s in pluvio["stations"] if s["value"] > 0 and s["value"] != -999]
+    active = [s for s in pluvio["stations"] if s["value"] >= RAIN_THRESHOLD_MM and s["value"] != -999]
     offline = [s for s in pluvio["stations"] if s["value"] == -999]
+    trace = [s for s in pluvio["stations"]
+             if 0 < s["value"] < RAIN_THRESHOLD_MM and s["value"] != -999]
+
+    if active:
+        reason = f"{len(active)} station(s) reporting rain"
+    elif trace:
+        reason = f"No meaningful rain ({len(trace)} station(s) with trace amounts)"
+    else:
+        reason = "No stations reporting rain"
 
     return {
         "raining": len(active) > 0,
         "active_stations": [{"name": s["name"], "rainfall": s["value"]} for s in active],
+        "trace_stations": [{"name": s["name"], "rainfall": s["value"]} for s in trace],
         "station_count": len(pluvio["stations"]),
         "offline_count": len(offline),
-        "reason": f"{len(active)} station(s) reporting rain" if active else "No stations reporting rain",
+        "reason": reason,
     }
 
 
