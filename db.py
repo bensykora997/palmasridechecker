@@ -166,11 +166,15 @@ def _by_date(predictions):
 
 def save_prediction(ride_date, score, decision, confidence, reasons,
                     forecast_avg_precip_prob=None, forecast_max_wind=None,
-                    forecast_avg_humidity=None, forecast_overnight_precip_mm=None):
+                    forecast_avg_humidity=None, forecast_overnight_precip_mm=None,
+                    station_snapshots=None):
     """Save or update the prediction for ride_date.
 
     Updates only if actuals haven't been filled in yet — once a day is
     evaluated, the prediction is frozen.
+
+    station_snapshots: optional list of {name, code, valor, p10m, p1h, p24h}
+    captured from SIATA at prediction time. Used for the audit trail.
     """
     if not is_enabled():
         return
@@ -183,6 +187,15 @@ def save_prediction(ride_date, score, decision, confidence, reasons,
     if existing and existing.get("actual") is not None:
         return  # already finalized — don't overwrite
 
+    forecast = {
+        "avg_precip_prob": forecast_avg_precip_prob,
+        "max_wind": forecast_max_wind,
+        "avg_humidity": forecast_avg_humidity,
+        "overnight_precip_mm": forecast_overnight_precip_mm,
+    }
+    if station_snapshots is not None:
+        forecast["station_snapshots"] = station_snapshots
+
     entry = {
         "ride_date": ride_date,
         "predicted_at": existing["predicted_at"] if existing else _now_iso(),
@@ -191,12 +204,7 @@ def save_prediction(ride_date, score, decision, confidence, reasons,
         "decision": decision,
         "confidence": confidence,
         "reasons": reasons,
-        "forecast": {
-            "avg_precip_prob": forecast_avg_precip_prob,
-            "max_wind": forecast_max_wind,
-            "avg_humidity": forecast_avg_humidity,
-            "overnight_precip_mm": forecast_overnight_precip_mm,
-        },
+        "forecast": forecast,
         "actual": existing.get("actual") if existing else None,
         "correct": existing.get("correct") if existing else None,
     }
@@ -232,8 +240,16 @@ def pending_actuals():
     return out
 
 
-def save_actuals(ride_date, actual_precip_mm, actual_max_wind, actual_rained):
-    """Fill in observed weather and compute the correctness verdict."""
+def save_actuals(ride_date, actual_precip_mm, actual_max_wind, actual_rained,
+                 open_meteo_precip_mm=None, siata_p24h_avg_mm=None,
+                 siata_p24h_max_mm=None, source=None,
+                 disagreement_mm=None, station_snapshots=None):
+    """Fill in observed weather and compute the correctness verdict.
+
+    Extra fields (all optional) form an audit trail for the dual-source
+    rain capture: which source the precip_mm value came from, what each
+    source reported, and what each corridor station was reading.
+    """
     if not is_enabled():
         return
     log = _read_all()
@@ -243,12 +259,26 @@ def save_actuals(ride_date, actual_precip_mm, actual_max_wind, actual_rained):
     if not entry:
         return
 
-    entry["actual"] = {
+    actual = {
         "precip_mm": actual_precip_mm,
         "max_wind": actual_max_wind,
         "rained": actual_rained,
         "updated_at": _now_iso(),
     }
+    if open_meteo_precip_mm is not None:
+        actual["open_meteo_precip_mm"] = open_meteo_precip_mm
+    if siata_p24h_avg_mm is not None:
+        actual["siata_p24h_avg_mm"] = siata_p24h_avg_mm
+    if siata_p24h_max_mm is not None:
+        actual["siata_p24h_max_mm"] = siata_p24h_max_mm
+    if source is not None:
+        actual["source"] = source
+    if disagreement_mm is not None:
+        actual["disagreement_mm"] = disagreement_mm
+    if station_snapshots is not None:
+        actual["station_snapshots"] = station_snapshots
+    entry["actual"] = actual
+
     decision = entry.get("decision")
     if decision == "YES":
         entry["correct"] = not actual_rained

@@ -34,35 +34,109 @@ def analyze_radar(radar):
 
 # SIATA pluvio stations often report sub-millimeter "noise" values
 # (e.g. 0.02 mm) that don't correspond to actual rainfall. Use the same
-# 0.1 mm threshold we use for Open-Meteo precipitation elsewhere so a
-# stuck sensor on one station can't single-handedly flip the score.
+# 0.1 mm threshold we use for Open-Meteo precipitation elsewhere.
 RAIN_THRESHOLD_MM = 0.1
+# Rain in the last hour: slightly higher threshold to avoid trace 24h
+# spillover (a brief shower yesterday should not still register as "raining now").
+P1H_RAIN_THRESHOLD_MM = 0.5
+
+
+def _val(s, key):
+    """Return s[key] as a non-None positive number, else None."""
+    v = s.get(key)
+    if v is None or (isinstance(v, (int, float)) and v == -999):
+        return None
+    return v
 
 
 def analyze_stations(pluvio):
-    """Check if any nearby SIATA stations show active rainfall."""
-    if not pluvio["available"] or not pluvio["stations"]:
-        return {"raining": False, "station_count": 0, "offline_count": 0, "active_stations": [], "reason": "No nearby stations"}
+    """Decide if Palmas-area stations are reporting active rainfall.
 
-    active = [s for s in pluvio["stations"] if s["value"] >= RAIN_THRESHOLD_MM and s["value"] != -999]
-    offline = [s for s in pluvio["stations"] if s["value"] == -999]
-    trace = [s for s in pluvio["stations"]
-             if 0 < s["value"] < RAIN_THRESHOLD_MM and s["value"] != -999]
+    Considers four signals per station (any one above its threshold flips
+    the station to "raining"):
+      - valor   ≥ 0.1   (current snapshot from the summary file)
+      - p10m    ≥ 0.1   (rain in the last 10 minutes, from detail file)
+      - p1h     ≥ 0.5   (rain in the last hour, from detail file)
+    `p24h` is surfaced for downstream use (road conditions) but doesn't
+    by itself flag "currently raining" — yesterday's shower may have
+    already evaporated by now.
+    """
+    if not pluvio["available"] or not pluvio["stations"]:
+        return {
+            "raining": False, "station_count": 0, "offline_count": 0,
+            "active_stations": [], "trace_stations": [],
+            "reason": "No nearby stations",
+            "live_signals": {},
+        }
+
+    stations = pluvio["stations"]
+
+    def is_raining(s):
+        valor = _val(s, "value")
+        p10m  = _val(s, "p10m")
+        p1h   = _val(s, "p1h")
+        if valor is not None and valor >= RAIN_THRESHOLD_MM:
+            return True, "valor"
+        if p10m is not None and p10m >= RAIN_THRESHOLD_MM:
+            return True, "p10m"
+        if p1h is not None and p1h >= P1H_RAIN_THRESHOLD_MM:
+            return True, "p1h"
+        return False, None
+
+    active = []
+    raining_via = None
+    for s in stations:
+        flag, source = is_raining(s)
+        if flag:
+            active.append(s)
+            raining_via = raining_via or source
+
+    offline = [s for s in stations if s.get("value") == -999]
+    trace = [s for s in stations
+             if 0 < (s.get("value") or 0) < RAIN_THRESHOLD_MM and s.get("value") != -999
+             and not any(_val(s, k) is not None and _val(s, k) >= RAIN_THRESHOLD_MM for k in ("p10m", "p1h"))]
 
     if active:
-        reason = f"{len(active)} station(s) reporting rain"
+        reason = f"{len(active)} station(s) reporting rain (via {raining_via})"
     elif trace:
         reason = f"No meaningful rain ({len(trace)} station(s) with trace amounts)"
     else:
         reason = "No stations reporting rain"
 
+    # Aggregate live signals across the corridor for the response payload
+    def safe_max(xs):
+        vals = [x for x in xs if x is not None]
+        return round(max(vals), 2) if vals else 0.0
+
+    def safe_avg(xs):
+        vals = [x for x in xs if x is not None]
+        return round(sum(vals) / len(vals), 2) if vals else 0.0
+
+    valor_vals = [_val(s, "value") for s in stations]
+    p10m_vals = [_val(s, "p10m") for s in stations]
+    p1h_vals  = [_val(s, "p1h")  for s in stations]
+    p24h_vals = [_val(s, "p24h") for s in stations]
+
+    live_signals = {
+        "valor_max": safe_max(valor_vals),
+        "p10m_max":  safe_max(p10m_vals),
+        "p1h_max":   safe_max(p1h_vals),
+        "p24h_max":  safe_max(p24h_vals),
+        "p24h_avg":  safe_avg(p24h_vals),
+        "raining_via": raining_via,
+    }
+
     return {
         "raining": len(active) > 0,
-        "active_stations": [{"name": s["name"], "rainfall": s["value"]} for s in active],
+        "active_stations": [{"name": s["name"], "rainfall": s.get("value"),
+                             "p10m": s.get("p10m"), "p1h": s.get("p1h"), "p24h": s.get("p24h")}
+                            for s in active],
         "trace_stations": [{"name": s["name"], "rainfall": s["value"]} for s in trace],
-        "station_count": len(pluvio["stations"]),
+        "station_count": len(stations),
         "offline_count": len(offline),
         "reason": reason,
+        "live_signals": live_signals,
+        "p24h_avg": live_signals["p24h_avg"],   # convenience for road analysis
     }
 
 
@@ -174,20 +248,37 @@ def analyze_road_conditions(open_meteo, station_analysis):
         if online > 0:
             result["factors"].append(f"All {online} stations currently dry")
 
-    # Determine condition
+    # SIATA p24h: average rainfall in the last 24h across the corridor.
+    # This captures microclimate rain that Open-Meteo's interpolated grid
+    # may have missed (the Palmas microclimate vs Medellín valley problem).
+    siata_p24h = station_analysis.get("p24h_avg", 0.0) or 0.0
+    if siata_p24h > 0.2:
+        result["factors"].append(f"SIATA stations recorded {siata_p24h:.1f} mm avg in last 24h")
+    result["siata_p24h_avg_mm"] = siata_p24h
+
+    # Determine condition: take the worst-case of Open-Meteo overnight
+    # precip vs SIATA p24h average. If either source says it rained,
+    # treat the road accordingly.
     precip = result["recent_precip_mm"]
     is_raining = station_analysis.get("raining", False)
+    worst = max(precip, siata_p24h)
 
     if is_raining:
         result["condition"] = "wet"
         result["detail"] = "Roads are wet — active rainfall"
-    elif precip > 5:
+    elif worst > 5:
         result["condition"] = "wet"
-        result["detail"] = "Roads likely wet — heavy recent rain"
-    elif precip > 1:
+        if siata_p24h > precip:
+            result["detail"] = f"Roads likely wet — SIATA recorded {siata_p24h:.1f} mm at Palmas in last 24h"
+        else:
+            result["detail"] = "Roads likely wet — heavy recent rain"
+    elif worst > 1:
         result["condition"] = "damp"
-        result["detail"] = "Roads may be damp — light recent rain"
-    elif precip > 0.2:
+        if siata_p24h > precip:
+            result["detail"] = f"Roads may be damp — SIATA recorded {siata_p24h:.1f} mm at Palmas in last 24h"
+        else:
+            result["detail"] = "Roads may be damp — light recent rain"
+    elif worst > 0.2:
         result["condition"] = "mostly_dry"
         result["detail"] = "Roads mostly dry — trace precipitation"
     else:

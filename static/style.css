@@ -559,3 +559,17 @@ body {
   margin-top: 1rem;
   font-variant-numeric: tabular-nums;
 }
+
+/* Source badge in history rows */
+.src-badge {
+  display: inline-block;
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.3rem;
+  font-size: 0.65rem;
+  margin-left: 0.4rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.src-badge.src-om { background: rgba(74,168,255,0.18); color: #4aa8ff; }
+.src-badge.src-siata { background: rgba(240,160,48,0.18); color: var(--accent-orange); }
+.src-badge.src-agreed { background: rgba(46,204,113,0.18); color: var(--accent-green); }

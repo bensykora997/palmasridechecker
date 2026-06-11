@@ -85,6 +85,10 @@ def build_result():
             "wrf_forecast": {"available": wrf_analysis.get("available", False)},
             "open_meteo": {"available": open_meteo["available"]},
         },
+        # Live SIATA aggregates across the corridor — shows which signal (if any)
+        # flipped the raining flag. Useful both for the UI "more details" view
+        # and for understanding why the road condition came out the way it did.
+        "live_signals": station_analysis.get("live_signals", {}),
         # Extra data shown only in the "More details" view — not factored into the score.
         "details": {
             "radar": {
@@ -100,8 +104,15 @@ def build_result():
                     "value": s["value"],
                     "neighborhood": s.get("neighborhood", ""),
                     "distance_km": s.get("distance_km"),
-                    "raining": s["value"] > 0 and s["value"] != -999,
-                    "offline": s["value"] == -999,
+                    "p10m": s.get("p10m"),
+                    "p1h": s.get("p1h"),
+                    "p24h": s.get("p24h"),
+                    "raining": (
+                        (s.get("value") is not None and s.get("value") != -999 and s.get("value", 0) >= 0.1)
+                        or (s.get("p10m") is not None and s.get("p10m", 0) >= 0.1)
+                        or (s.get("p1h") is not None and s.get("p1h", 0) >= 0.5)
+                    ),
+                    "offline": s.get("value") == -999 or not s.get("sensor_live", True),
                 }
                 for s in pluvio.get("stations", [])
             ],
@@ -115,6 +126,15 @@ def build_result():
         if db.is_enabled():
             db.init_schema()
             avg_prob, max_wind, avg_hum, overnight = _summarize_forecast(open_meteo)
+            station_snapshots = [
+                {
+                    "name": s.get("name"), "code": s.get("code"),
+                    "distance_km": s.get("distance_km"),
+                    "valor": s.get("value"), "p10m": s.get("p10m"),
+                    "p1h": s.get("p1h"), "p24h": s.get("p24h"),
+                }
+                for s in pluvio.get("stations", [])
+            ]
             db.save_prediction(
                 ride_date=get_tomorrow_date(),
                 score=result["score"],
@@ -125,17 +145,46 @@ def build_result():
                 forecast_max_wind=max_wind,
                 forecast_avg_humidity=avg_hum,
                 forecast_overnight_precip_mm=overnight,
+                station_snapshots=station_snapshots,
             )
-            # Backfill any past predictions with observed weather
+            # Backfill any past predictions with observed weather. Mirror the
+            # dual-source logic in api/cron.py so opportunistic backfill
+            # (when a user hits /api/check) writes the same enriched fields.
+            p24h_vals = [s.get("p24h") for s in pluvio.get("stations", []) if s.get("p24h") is not None]
+            siata_avg = round(sum(p24h_vals) / len(p24h_vals), 2) if p24h_vals else None
+            siata_max = round(max(p24h_vals), 2) if p24h_vals else None
             for past_date in db.pending_actuals():
-                actuals = fetch_actuals_for_date(past_date)
-                if actuals:
-                    db.save_actuals(
-                        ride_date=past_date,
-                        actual_precip_mm=actuals["precip_mm"],
-                        actual_max_wind=actuals["max_wind"],
-                        actual_rained=actuals["rained"],
-                    )
+                om = fetch_actuals_for_date(past_date)
+                om_precip = om["precip_mm"] if om else None
+                om_max_wind = om["max_wind"] if om else None
+                candidates = [v for v in (om_precip, siata_avg) if v is not None]
+                if not candidates:
+                    continue
+                precip_final = round(max(candidates), 2)
+                if om_precip is None:
+                    source, disagreement = "siata_p24h", None
+                elif siata_avg is None:
+                    source, disagreement = "open_meteo", None
+                else:
+                    disagreement = round(abs(om_precip - siata_avg), 2)
+                    if disagreement < 0.5:
+                        source = "agreed"
+                    elif siata_avg > om_precip:
+                        source = "siata_p24h"
+                    else:
+                        source = "open_meteo"
+                db.save_actuals(
+                    ride_date=past_date,
+                    actual_precip_mm=precip_final,
+                    actual_max_wind=om_max_wind if om_max_wind is not None else 0,
+                    actual_rained=precip_final > 0.1,
+                    open_meteo_precip_mm=om_precip,
+                    siata_p24h_avg_mm=siata_avg,
+                    siata_p24h_max_mm=siata_max,
+                    source=source,
+                    disagreement_mm=disagreement,
+                    station_snapshots=station_snapshots,
+                )
             response["logging"] = {"enabled": True}
         else:
             response["logging"] = {"enabled": False}

@@ -300,13 +300,19 @@ function renderDetails(data) {
 
     drawRoute(__miniMap);
 
+    const fmt = v => (v === null || v === undefined) ? "—" : `${Number(v).toFixed(1)} mm`;
     stations.forEach(s => {
       const color = s.offline ? "#888" : (s.raining ? "#4aa8ff" : "#2ecc71");
       const dot = L.circleMarker([s.lat, s.lon], {
         radius: 7, color: "#000", weight: 1, fillColor: color, fillOpacity: 0.9,
       }).addTo(__miniMap);
-      const valStr = s.offline ? "offline" : `${s.value} mm`;
-      dot.bindPopup(`<b>${s.name}</b><br>${s.neighborhood || ""}<br>Rain: ${valStr}<br>${s.distance_km} km from route`);
+      const valStr = s.offline ? "offline" : fmt(s.value);
+      dot.bindPopup(`
+        <b>${s.name}</b><br>
+        ${s.neighborhood || ""}<br>
+        Now: ${valStr} · 10m: ${fmt(s.p10m)} · 1h: ${fmt(s.p1h)} · 24h: ${fmt(s.p24h)}<br>
+        ${s.distance_km} km from route
+      `);
     });
 
     const bounds = [];
@@ -398,13 +404,24 @@ function renderHistory(data) {
           ? `rained (${p.actual.precip_mm}mm)`
           : `dry (${p.actual.precip_mm}mm)`)
       : "pending";
+    // Source badge — visible only when actuals are logged
+    let sourceBadge = "";
+    if (p.actual && p.actual.source) {
+      const sourceMap = {
+        "open_meteo": { label: "🛰️ Open-Meteo", cls: "src-om" },
+        "siata_p24h": { label: "📡 SIATA", cls: "src-siata" },
+        "agreed":     { label: "✓ Agreed",     cls: "src-agreed" },
+      };
+      const info = sourceMap[p.actual.source] || { label: p.actual.source, cls: "" };
+      sourceBadge = `<span class="src-badge ${info.cls}">${info.label}</span>`;
+    }
     return `
       <div class="history-row">
         <div class="history-date">
           <div class="history-verdict ${verdictCls}">${verdict}</div>
           <div>
             <div>${date}</div>
-            <div class="history-sub">Predicted: ${p.decision} · Actual: ${actualBit}</div>
+            <div class="history-sub">Predicted: ${p.decision} · Actual: ${actualBit} ${sourceBadge}</div>
           </div>
         </div>
         <div class="history-score" style="color:${scoreColor(p.score)}">${p.score}</div>

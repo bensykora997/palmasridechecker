@@ -1,7 +1,9 @@
 import json
 import math
+import time
 import urllib.request
 import ssl
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from config import SIATA_URLS, PALMAS_ROUTE, CORRIDOR_RADIUS_KM
 from cache import get_cached, set_cache
 
@@ -42,36 +44,93 @@ def _fetch_json(url, label, timeout=10):
         return None
 
 
-def _is_rainfall_sensor_live(station_code):
-    """Cross-check a station's rainfall sensor by hitting its detail file.
+def _fetch_station_detail(station_code, timeout=3):
+    """Fetch and parse a station's detail file `{code}.json`.
 
-    SIATA's summary Pluviometrica.json sometimes serves a stale residual
-    value (e.g. 0.02 mm) from a station whose rainfall sensor has actually
-    gone offline. The per-station detail file `{code}.json` exposes the
-    real-time state via p10m / p1h / p24h. If all three report -999, the
-    rainfall sensor is offline and the summary value should be ignored.
+    Returns a dict with normalized rainfall fields (None where -999 / missing):
+      {
+        "p10m": float or None,
+        "p1h":  float or None,
+        "p24h": float or None,
+        "date": float or None,    # Unix timestamp the station last reported
+        "age_seconds": float or None,
+        "available": bool,
+      }
 
-    Returns True if at least one rainfall timescale has a real reading.
-    Falls back to True if the detail file is unreachable — better to trust
-    the summary than discard a possibly-real reading on a network blip.
+    Network errors → {"available": False, ...}. Cached by URL via cache.py.
     """
+    blank = {"p10m": None, "p1h": None, "p24h": None,
+             "date": None, "age_seconds": None, "available": False}
     if not station_code:
-        return True
+        return blank
     detail = _fetch_json(
         f"https://siata.gov.co/data/siata_app/{station_code}.json",
         f"station detail {station_code}",
-        timeout=5,
+        timeout=timeout,
     )
     if not detail:
-        return True
-    for key in ("p10m", "p1h", "p24h"):
+        return blank
+
+    def f(key):
         v = detail.get(key)
         try:
-            if float(v) != -999:
-                return True
+            fv = float(v)
+            if fv == -999:
+                return None
+            return fv
         except (TypeError, ValueError):
-            continue
-    return False
+            return None
+
+    date_val = f("date")
+    age = (time.time() - date_val) if date_val else None
+    return {
+        "p10m": f("p10m"),
+        "p1h":  f("p1h"),
+        "p24h": f("p24h"),
+        "date": date_val,
+        "age_seconds": age,
+        "available": True,
+    }
+
+
+def _is_rainfall_sensor_live(detail):
+    """Given a normalized detail dict (from _fetch_station_detail), does the
+    rainfall sensor have any real reading?
+
+    Falls back to True if the detail file was unreachable (conservative — we'd
+    rather keep the summary `valor` on a network blip than drop possibly-real
+    data).
+    """
+    if not detail or not detail.get("available"):
+        return True
+    return any(detail.get(k) is not None for k in ("p10m", "p1h", "p24h"))
+
+
+def _enrich_stations(stations):
+    """Fetch each station's detail file in parallel and merge p10m/p1h/p24h
+    into the station dicts. Bounded by ThreadPoolExecutor to keep latency
+    under ~4s even with 15+ stations.
+    """
+    if not stations:
+        return
+
+    def task(s):
+        return s, _fetch_station_detail(s.get("code"))
+
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        futures = [ex.submit(task, s) for s in stations]
+        for fut in as_completed(futures):
+            try:
+                s, detail = fut.result()
+            except Exception as e:
+                print(f"[SIATA] station enrich failed: {e}")
+                continue
+            s["p10m"] = detail.get("p10m")
+            s["p1h"] = detail.get("p1h")
+            s["p24h"] = detail.get("p24h")
+            s["detail_age_seconds"] = detail.get("age_seconds")
+            s["detail_available"] = detail.get("available", False)
+            s["sensor_live"] = _is_rainfall_sensor_live(detail)
 
 
 def fetch_pluviometrica():
@@ -112,17 +171,20 @@ def fetch_pluviometrica():
 
     stations = [normalize(s) for s in nearby]
 
-    # Cross-check: for any station whose summary value would count as
-    # "raining" (>= 0.1 mm), verify the rainfall sensor is actually live
-    # by hitting the detail file. If all rainfall timescales report -999
-    # we treat the station as offline (-999) so the score isn't anchored
-    # to a stale residual reading from a dead sensor.
+    # Enrich every corridor station with its detail file (p10m/p1h/p24h).
+    # This is what lets us detect rain that the summary `valor` snapshot
+    # misses (e.g. rain in the last hour that has since stopped, or a
+    # microclimate event captured by the rolling totals but not by the
+    # current-instant value). Cross-check for dead sensors at the same time.
+    _enrich_stations(stations)
+
     verified_offline = []
     for s in stations:
-        if s["value"] >= 0.1 and s["value"] != -999:
-            if not _is_rainfall_sensor_live(s["code"]):
-                verified_offline.append(s["name"])
-                s["value"] = -999
+        # A station with valor >= 0.1 but all detail-file rainfall fields
+        # reporting None (-999) has a dead rain sensor — drop its value.
+        if s.get("value", -999) >= 0.1 and s.get("value") != -999 and not s.get("sensor_live", True):
+            verified_offline.append(s["name"])
+            s["value"] = -999
 
     return {
         "stations": stations,

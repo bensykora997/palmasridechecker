@@ -54,6 +54,34 @@ def _summarize_forecast(open_meteo):
     return round(avg_prob, 1), round(max_wind, 1), round(avg_hum, 1), round(overnight, 2)
 
 
+def _station_snapshots(pluvio):
+    """Capture each corridor station's full rain readings for the audit trail."""
+    return [
+        {
+            "name": s.get("name"),
+            "code": s.get("code"),
+            "distance_km": s.get("distance_km"),
+            "valor": s.get("value"),
+            "p10m": s.get("p10m"),
+            "p1h": s.get("p1h"),
+            "p24h": s.get("p24h"),
+        }
+        for s in pluvio.get("stations", [])
+    ]
+
+
+def _siata_p24h_stats(pluvio):
+    """Compute average / max p24h across corridor stations.
+
+    Returns (avg, max, [station snapshots]). p24h values that are None
+    (sensor offline / no reading) are excluded from the aggregates.
+    """
+    vals = [s.get("p24h") for s in pluvio.get("stations", []) if s.get("p24h") is not None]
+    if not vals:
+        return None, None
+    return round(sum(vals) / len(vals), 2), round(max(vals), 2)
+
+
 def run_cron():
     """Do both jobs: log tomorrow's prediction, then backfill actuals."""
     result = {"logged": None, "backfilled": [], "skipped_backfill": [], "errors": []}
@@ -91,6 +119,7 @@ def run_cron():
             forecast_max_wind=max_wind,
             forecast_avg_humidity=avg_hum,
             forecast_overnight_precip_mm=overnight,
+            station_snapshots=_station_snapshots(pluvio),
         )
         result["logged"] = {
             "ride_date": ride_date,
@@ -101,23 +130,73 @@ def run_cron():
         result["errors"].append(f"log_prediction: {e}")
 
     # 2) Backfill any pending actuals
+    # Capture SIATA's p24h totals NOW (07:00 cron run) — at this point
+    # p24h covers yesterday afternoon → this morning, i.e. the ride
+    # window we want to evaluate. We reuse the same pluvio fetch from
+    # step 1 since it's seconds old.
     try:
+        # `pluvio` may not be defined if step 1 errored — refetch defensively
+        try:
+            pluvio_for_backfill = pluvio
+        except NameError:
+            pluvio_for_backfill = fetch_pluviometrica()
+
+        siata_avg, siata_max = _siata_p24h_stats(pluvio_for_backfill)
+        station_snaps = _station_snapshots(pluvio_for_backfill)
+
         for past_date in db.pending_actuals():
-            actuals = fetch_actuals_for_date(past_date)
-            if actuals:
-                db.save_actuals(
-                    ride_date=past_date,
-                    actual_precip_mm=actuals["precip_mm"],
-                    actual_max_wind=actuals["max_wind"],
-                    actual_rained=actuals["rained"],
-                )
-                result["backfilled"].append({
-                    "ride_date": past_date,
-                    "precip_mm": actuals["precip_mm"],
-                    "rained": actuals["rained"],
-                })
-            else:
+            om = fetch_actuals_for_date(past_date)
+            om_precip = om["precip_mm"] if om else None
+            om_max_wind = om["max_wind"] if om else None
+
+            # Pick the higher of the two precipitation sources. We never
+            # want to underreport rain; over-reporting would push a NO
+            # decision toward being marked correct, which is the safer
+            # direction (better to call a wet day wet than miss it).
+            candidates = [v for v in (om_precip, siata_avg) if v is not None]
+            if not candidates:
+                # Both sources failed — skip this date so we retry next run.
                 result["skipped_backfill"].append(past_date)
+                continue
+            precip_final = round(max(candidates), 2)
+            rained_final = precip_final > 0.1
+
+            # Decide source label + disagreement
+            if om_precip is None:
+                source = "siata_p24h"
+                disagreement = None
+            elif siata_avg is None:
+                source = "open_meteo"
+                disagreement = None
+            else:
+                disagreement = round(abs(om_precip - siata_avg), 2)
+                if disagreement < 0.5:
+                    source = "agreed"
+                elif siata_avg > om_precip:
+                    source = "siata_p24h"
+                else:
+                    source = "open_meteo"
+
+            db.save_actuals(
+                ride_date=past_date,
+                actual_precip_mm=precip_final,
+                actual_max_wind=om_max_wind if om_max_wind is not None else 0,
+                actual_rained=rained_final,
+                open_meteo_precip_mm=om_precip,
+                siata_p24h_avg_mm=siata_avg,
+                siata_p24h_max_mm=siata_max,
+                source=source,
+                disagreement_mm=disagreement,
+                station_snapshots=station_snaps,
+            )
+            result["backfilled"].append({
+                "ride_date": past_date,
+                "precip_mm": precip_final,
+                "rained": rained_final,
+                "source": source,
+                "open_meteo_precip_mm": om_precip,
+                "siata_p24h_avg_mm": siata_avg,
+            })
     except Exception as e:
         result["errors"].append(f"backfill: {e}")
 
