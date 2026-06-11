@@ -13,16 +13,20 @@
           crossorigin=""></script>
 </head>
 <body>
+  <button class="lang-toggle" id="langToggle"
+          onclick="setLanguage(LANG === 'en' ? 'es' : 'en')"
+          aria-label="Switch language">EN</button>
+
   <div class="app">
     <header class="header">
       <h1>🚴 Palmas Ride Engine</h1>
-      <p class="subtitle">Alto de Palmas · Medellín · Tomorrow morning</p>
+      <p class="subtitle">Alto de Palmas · Medellín · Mañana por la mañana</p>
     </header>
 
     <main id="main" class="main">
       <div class="loader" id="loader">
         <div class="spinner"></div>
-        <p>Fetching weather data…</p>
+        <p>Cargando…</p>
       </div>
     </main>
   </div>

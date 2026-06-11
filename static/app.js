@@ -1,20 +1,134 @@
 const main = document.getElementById("main");
 
-const DAYS_ES = [
-  "domingo", "lunes", "martes", "miércoles",
-  "jueves", "viernes", "sábado",
-];
-const MONTHS_ES = [
-  "enero", "febrero", "marzo", "abril", "mayo", "junio",
-  "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
-];
+// ---------- i18n (UI chrome only — backend-generated reasons stay in English) ----------
 
-function formatDateES(dateStr) {
+const T = {
+  en: {
+    subtitle: "Alto de Palmas · Medellín · Tomorrow morning",
+    score_label: "Ride Score",
+    confidence: "Confidence",
+    confidence_high: "high", confidence_medium: "medium", confidence_low: "low",
+    window_label: "Riding window",
+    road_title: "Road Conditions",
+    road_dry: "Dry", road_mostly_dry: "Mostly Dry", road_damp: "Damp",
+    road_wet: "Wet", road_unknown: "Unknown",
+    analysis: "Analysis",
+    data_sources: "Data Sources",
+    siata_stations: "SIATA Stations",
+    radar: "Radar",
+    wrf_forecast: "WRF Forecast",
+    open_meteo: "Open-Meteo",
+    available: "Available", unavailable: "Unavailable", active: "Active",
+    nearby_suffix: "nearby", offline_suffix: "offline",
+    refresh: "Refresh", more_details: "More Details", hide_details: "Hide Details",
+    history: "History",
+    last_updated: "Last updated",
+    air_quality: "Air Quality",
+    aqi_disclaimer: "Not factored into the ride score.",
+    aqi_unavailable: "Air quality data unavailable.",
+    radar_unavailable: "Radar unavailable.",
+    stations_on_climb: "Stations on the Climb",
+    legend_raining: "Raining", legend_dry: "Dry", legend_offline: "Offline",
+    legend_route: "Route",
+    fetching: "Fetching weather data…",
+    failed_load: "Failed to load data",
+    retry: "Retry",
+    loading_history: "Loading history…",
+    history_unavailable: "History unavailable",
+    history_unavailable_reason: "Logging is not configured.",
+    back: "Back", back_to_today: "Back to Today",
+    prediction_accuracy: "Prediction Accuracy",
+    accuracy: "accuracy", correct: "correct", wrong: "wrong", pending: "pending",
+    recent_predictions: "Recent Predictions",
+    no_predictions: "No predictions logged yet.",
+    predicted: "Predicted", actual: "Actual",
+    rained_label: "rained", dry_label: "dry", pending_label: "pending",
+    popup_now: "Now", popup_route_suffix: "km from route",
+    source_open_meteo: "🛰️ Open-Meteo", source_siata: "📡 SIATA", source_agreed: "✓ Agreed",
+    vibes: [
+      [90, "🚴‍♂️💨", "Kit up and clip in!", "yes"],
+      [75, "🔥", "Send it, parcero!", "yes"],
+      [60, "🦺", "Rideable — pack a gilet", "yes"],
+      [50, "🎲", "Roll the dice, roll the wheels", "yes"],
+      [35, "🪨", "Zwift and chill, bro", "no"],
+      [20, "🌧️", "Not today, parcero", "no"],
+      [0,  "🛋️", "Rest day — zero guilt", "no"],
+    ],
+  },
+  es: {
+    subtitle: "Alto de Palmas · Medellín · Mañana por la mañana",
+    score_label: "Puntaje de salida",
+    confidence: "Confianza",
+    confidence_high: "alta", confidence_medium: "media", confidence_low: "baja",
+    window_label: "Ventana de salida",
+    road_title: "Estado de la vía",
+    road_dry: "Seca", road_mostly_dry: "Casi seca", road_damp: "Húmeda",
+    road_wet: "Mojada", road_unknown: "Desconocido",
+    analysis: "Análisis",
+    data_sources: "Fuentes de datos",
+    siata_stations: "Estaciones SIATA",
+    radar: "Radar",
+    wrf_forecast: "Pronóstico WRF",
+    open_meteo: "Open-Meteo",
+    available: "Disponible", unavailable: "No disponible", active: "Activo",
+    nearby_suffix: "cerca", offline_suffix: "sin señal",
+    refresh: "Actualizar", more_details: "Más detalles", hide_details: "Ocultar detalles",
+    history: "Historial",
+    last_updated: "Última actualización",
+    air_quality: "Calidad del aire",
+    aqi_disclaimer: "No afecta el puntaje de salida.",
+    aqi_unavailable: "Calidad del aire no disponible.",
+    radar_unavailable: "Radar no disponible.",
+    stations_on_climb: "Estaciones del ascenso",
+    legend_raining: "Lluvia", legend_dry: "Sin lluvia", legend_offline: "Sin señal",
+    legend_route: "Ruta",
+    fetching: "Obteniendo datos del clima…",
+    failed_load: "Error al cargar los datos",
+    retry: "Reintentar",
+    loading_history: "Cargando historial…",
+    history_unavailable: "Historial no disponible",
+    history_unavailable_reason: "El registro no está configurado.",
+    back: "Atrás", back_to_today: "Volver a hoy",
+    prediction_accuracy: "Precisión de predicciones",
+    accuracy: "precisión", correct: "correctas", wrong: "incorrectas", pending: "pendientes",
+    recent_predictions: "Predicciones recientes",
+    no_predictions: "Aún no hay predicciones registradas.",
+    predicted: "Predicción", actual: "Real",
+    rained_label: "llovió", dry_label: "seco", pending_label: "pendiente",
+    popup_now: "Ahora", popup_route_suffix: "km de la ruta",
+    source_open_meteo: "🛰️ Open-Meteo", source_siata: "📡 SIATA", source_agreed: "✓ De acuerdo",
+    vibes: [
+      [90, "🚴‍♂️💨", "¡Listos, a clavar!", "yes"],
+      [75, "🔥", "¡Dale parce, mándale!", "yes"],
+      [60, "🦺", "Rodable — llevá chaleco", "yes"],
+      [50, "🎲", "A jugársela con las llantas", "yes"],
+      [35, "🪨", "Mejor Zwift y chao", "no"],
+      [20, "🌧️", "Hoy no, parcero", "no"],
+      [0,  "🛋️", "Día de descanso — sin culpa", "no"],
+    ],
+  },
+};
+
+let LANG = (localStorage.getItem("palmas_lang") === "en") ? "en" : "es";
+const t = (key) => (T[LANG] && T[LANG][key]) || T.en[key] || key;
+
+function setLanguage(lang) {
+  LANG = (lang === "en") ? "en" : "es";
+  localStorage.setItem("palmas_lang", LANG);
+  document.documentElement.lang = LANG;
+  const btn = document.getElementById("langToggle");
+  if (btn) btn.textContent = LANG === "en" ? "ES" : "EN";
+  document.querySelector(".subtitle").textContent = t("subtitle");
+  if (window.__lastData) render(window.__lastData);
+}
+
+// Localized date — "domingo, 24 de mayo" in ES, "Sunday, May 24" in EN.
+function formatDate(dateStr) {
   const d = new Date(dateStr + "T12:00:00");
-  const day = DAYS_ES[d.getDay()];
-  const num = d.getDate();
-  const month = MONTHS_ES[d.getMonth()];
-  return `${day}, ${num} de ${month}`;
+  if (LANG === "en") {
+    return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  }
+  return d.toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long" });
 }
 
 function scoreColor(score) {
@@ -38,22 +152,17 @@ const ROAD_ICONS = {
   unknown: "❓",
 };
 
-const ROAD_LABELS = {
-  dry: "Dry",
-  mostly_dry: "Mostly Dry",
-  damp: "Damp",
-  wet: "Wet",
-  unknown: "Unknown",
-};
+function roadLabel(condition) {
+  const key = "road_" + condition;
+  return t(key) || condition;
+}
 
 function getVibe(score) {
-  if (score >= 90) return { emoji: "🚴‍♂️💨", text: "Kit up and clip in!", cls: "yes" };
-  if (score >= 75) return { emoji: "🔥", text: "Send it, parcero!", cls: "yes" };
-  if (score >= 60) return { emoji: "🦺", text: "Rideable — pack a gilet", cls: "yes" };
-  if (score >= 50) return { emoji: "🎲", text: "Roll the dice, roll the wheels", cls: "yes" };
-  if (score >= 35) return { emoji: "🪨", text: "Zwift and chill, bro", cls: "no" };
-  if (score >= 20) return { emoji: "🌧️", text: "Not today, parcero", cls: "no" };
-  return              { emoji: "🛋️", text: "Rest day — zero guilt", cls: "no" };
+  const vibes = t("vibes");
+  for (const [threshold, emoji, text, cls] of vibes) {
+    if (score >= threshold) return { emoji, text, cls };
+  }
+  return { emoji: "🛋️", text: "", cls: "no" };
 }
 
 function render(data) {
@@ -61,7 +170,9 @@ function render(data) {
   const road = data.road_conditions || { condition: "unknown", detail: "", factors: [] };
   const vibe = getVibe(data.score);
   const now = new Date();
-  const updatedAt = now.toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const locale = LANG === "en" ? "en-US" : "es-CO";
+  const updatedAt = now.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const confidenceLabel = t("confidence_" + data.confidence) || data.confidence;
 
   main.innerHTML = `
     <div class="card">
@@ -70,12 +181,12 @@ function render(data) {
         <div class="decision-text ${vibe.cls}">
           ${vibe.text}
         </div>
-        <div class="decision-date">${formatDateES(data.tomorrow_date)}</div>
+        <div class="decision-date">${formatDate(data.tomorrow_date)}</div>
       </div>
 
       <div class="score-section">
         <div class="score-header">
-          <span class="score-label">Ride Score</span>
+          <span class="score-label">${t("score_label")}</span>
           <span class="score-value" style="color:${scoreColor(data.score)}">${data.score}/100</span>
         </div>
         <div class="score-bar">
@@ -84,13 +195,13 @@ function render(data) {
       </div>
 
       <div class="confidence-row">
-        <span class="badge ${data.confidence}">Confidence: ${data.confidence}</span>
+        <span class="badge ${data.confidence}">${t("confidence")}: ${confidenceLabel}</span>
       </div>
 
       <div class="window-card">
         <div class="window-icon">🕐</div>
         <div>
-          <div class="window-label">Riding window</div>
+          <div class="window-label">${t("window_label")}</div>
           <div class="window-time">05:00 – 07:30</div>
         </div>
       </div>
@@ -100,8 +211,8 @@ function render(data) {
       <div class="road-header">
         <div class="road-icon">${ROAD_ICONS[road.condition] || "❓"}</div>
         <div>
-          <div class="road-title">Road Conditions</div>
-          <div class="road-status ${road.condition}">${ROAD_LABELS[road.condition] || "Unknown"}</div>
+          <div class="road-title">${t("road_title")}</div>
+          <div class="road-status ${road.condition}">${roadLabel(road.condition)}</div>
         </div>
       </div>
       <div class="road-detail">${road.detail}</div>
@@ -118,7 +229,7 @@ function render(data) {
     </div>
 
     <div class="reasons-card">
-      <div class="reasons-title">Analysis</div>
+      <div class="reasons-title">${t("analysis")}</div>
       ${data.reasons.map(r => `
         <div class="reason-item">
           <div class="reason-dot"></div>
@@ -128,32 +239,32 @@ function render(data) {
     </div>
 
     <div class="sources-card">
-      <div class="reasons-title">Data Sources</div>
+      <div class="reasons-title">${t("data_sources")}</div>
       <div class="source-row">
-        <span class="source-name">SIATA Stations</span>
+        <span class="source-name">${t("siata_stations")}</span>
         <span class="source-status">
-          ${ds.siata_stations.count} nearby (${ds.siata_stations.offline} offline)
+          ${ds.siata_stations.count} ${t("nearby_suffix")} (${ds.siata_stations.offline} ${t("offline_suffix")})
           <span class="dot ${ds.siata_stations.count > 0 ? "on" : "off"}"></span>
         </span>
       </div>
       <div class="source-row">
-        <span class="source-name">Radar</span>
+        <span class="source-name">${t("radar")}</span>
         <span class="source-status">
-          ${ds.radar.available ? "Active" : "Unavailable"}
+          ${ds.radar.available ? t("active") : t("unavailable")}
           <span class="dot ${ds.radar.available ? "on" : "off"}"></span>
         </span>
       </div>
       <div class="source-row">
-        <span class="source-name">WRF Forecast</span>
+        <span class="source-name">${t("wrf_forecast")}</span>
         <span class="source-status">
-          ${ds.wrf_forecast.available ? "Available" : "Unavailable"}
+          ${ds.wrf_forecast.available ? t("available") : t("unavailable")}
           <span class="dot ${ds.wrf_forecast.available ? "on" : "off"}"></span>
         </span>
       </div>
       <div class="source-row">
-        <span class="source-name">Open-Meteo</span>
+        <span class="source-name">${t("open_meteo")}</span>
         <span class="source-status">
-          ${ds.open_meteo.available ? "Available" : "Unavailable"}
+          ${ds.open_meteo.available ? t("available") : t("unavailable")}
           <span class="dot ${ds.open_meteo.available ? "on" : "off"}"></span>
         </span>
       </div>
@@ -161,12 +272,12 @@ function render(data) {
 
     <div id="details-slot"></div>
 
-    <div class="updated-row">Last updated: ${updatedAt}</div>
+    <div class="updated-row">${t("last_updated")}: ${updatedAt}</div>
 
     <div class="actions-row">
-      <button class="refresh-btn" onclick="refresh()">Refresh</button>
-      <button class="refresh-btn secondary" id="detailsBtn" onclick="toggleDetails()">More Details</button>
-      <button class="refresh-btn secondary" onclick="loadHistory()">History</button>
+      <button class="refresh-btn" onclick="refresh()">${t("refresh")}</button>
+      <button class="refresh-btn secondary" id="detailsBtn" onclick="toggleDetails()">${t("more_details")}</button>
+      <button class="refresh-btn secondary" onclick="loadHistory()">${t("history")}</button>
     </div>
   `;
 
@@ -186,9 +297,9 @@ function render(data) {
 function renderError(msg) {
   main.innerHTML = `
     <div class="error-card">
-      <p>Failed to load data</p>
+      <p>${t("failed_load")}</p>
       <p style="font-size:0.85rem;margin-top:0.5rem;opacity:0.7">${msg}</p>
-      <button class="refresh-btn" style="margin-top:1rem" onclick="refresh()">Retry</button>
+      <button class="refresh-btn" style="margin-top:1rem" onclick="refresh()">${t("retry")}</button>
     </div>
   `;
 }
@@ -205,11 +316,11 @@ function toggleDetails() {
   if (!slot) return;
   if (slot.dataset.open === "1") {
     closeDetails();
-    btn.textContent = "More Details";
+    btn.textContent = t("more_details");
   } else {
     renderDetails(window.__lastData);
     slot.dataset.open = "1";
-    btn.textContent = "Hide Details";
+    btn.textContent = t("hide_details");
   }
 }
 
@@ -244,7 +355,7 @@ function renderDetails(data) {
 
   slot.innerHTML = `
     <div class="card details-card">
-      <div class="reasons-title">Air Quality</div>
+      <div class="reasons-title">${t("air_quality")}</div>
       ${aqi.available ? `
         <div class="aqi-row">
           <div class="aqi-pill" style="background:${aqiColor(aqi.tier)}">${aqi.us_aqi ?? "—"}</div>
@@ -253,26 +364,26 @@ function renderDetails(data) {
             <div class="aqi-sub">PM2.5: ${aqi.pm2_5 ?? "—"} µg/m³ · PM10: ${aqi.pm10 ?? "—"} µg/m³ · EAQI: ${aqi.european_aqi ?? "—"}</div>
           </div>
         </div>
-        <div class="aqi-note">Not factored into the ride score.</div>
-      ` : `<p style="opacity:0.6;font-size:0.9rem">Air quality data unavailable.</p>`}
+        <div class="aqi-note">${t("aqi_disclaimer")}</div>
+      ` : `<p style="opacity:0.6;font-size:0.9rem">${t("aqi_unavailable")}</p>`}
     </div>
 
     <div class="card details-card">
-      <div class="reasons-title">Radar</div>
+      <div class="reasons-title">${t("radar")}</div>
       ${radar.available && radar.frames && radar.frames.length ? `
         <div id="radar-map" class="radar-map"></div>
         <div id="radarTime" class="radar-time-inline"></div>
-      ` : `<p style="opacity:0.6;font-size:0.9rem">Radar unavailable.</p>`}
+      ` : `<p style="opacity:0.6;font-size:0.9rem">${t("radar_unavailable")}</p>`}
     </div>
 
     <div class="card details-card">
-      <div class="reasons-title">Stations on the Climb</div>
+      <div class="reasons-title">${t("stations_on_climb")}</div>
       <div id="mini-map" class="mini-map"></div>
       <div class="map-legend">
-        <span><span class="map-dot raining"></span> Raining</span>
-        <span><span class="map-dot dry"></span> Dry</span>
-        <span><span class="map-dot offline"></span> Offline</span>
-        <span><span class="map-line"></span> Route</span>
+        <span><span class="map-dot raining"></span> ${t("legend_raining")}</span>
+        <span><span class="map-dot dry"></span> ${t("legend_dry")}</span>
+        <span><span class="map-dot offline"></span> ${t("legend_offline")}</span>
+        <span><span class="map-line"></span> ${t("legend_route")}</span>
       </div>
     </div>
   `;
@@ -310,8 +421,8 @@ function renderDetails(data) {
       dot.bindPopup(`
         <b>${s.name}</b><br>
         ${s.neighborhood || ""}<br>
-        Now: ${valStr} · 10m: ${fmt(s.p10m)} · 1h: ${fmt(s.p1h)} · 24h: ${fmt(s.p24h)}<br>
-        ${s.distance_km} km from route
+        ${t("popup_now")}: ${valStr} · 10m: ${fmt(s.p10m)} · 1h: ${fmt(s.p1h)} · 24h: ${fmt(s.p24h)}<br>
+        ${s.distance_km} ${t("popup_route_suffix")}
       `);
     });
 
@@ -378,11 +489,11 @@ function renderHistory(data) {
   if (!data.enabled) {
     main.innerHTML = `
       <div class="card">
-        <div class="reasons-title">History unavailable</div>
+        <div class="reasons-title">${t("history_unavailable")}</div>
         <p style="opacity:0.75;font-size:0.9rem;margin-top:0.5rem">
-          ${data.error || "Logging is not configured. Set POSTGRES_URL to enable."}
+          ${data.error || t("history_unavailable_reason")}
         </p>
-        <button class="refresh-btn" style="margin-top:1rem" onclick="load()">Back</button>
+        <button class="refresh-btn" style="margin-top:1rem" onclick="load()">${t("back")}</button>
       </div>
     `;
     return;
@@ -392,7 +503,7 @@ function renderHistory(data) {
   const accuracy = s.accuracy_pct == null ? "—" : `${s.accuracy_pct}%`;
 
   const rows = (data.predictions || []).map(p => {
-    const date = formatDateES(p.ride_date);
+    const date = formatDate(p.ride_date);
     const verdict = p.correct === true ? "✓"
                   : p.correct === false ? "✗"
                   : "…";
@@ -401,16 +512,16 @@ function renderHistory(data) {
                      : "pending";
     const actualBit = p.actual
       ? (p.actual.rained
-          ? `rained (${p.actual.precip_mm}mm)`
-          : `dry (${p.actual.precip_mm}mm)`)
-      : "pending";
+          ? `${t("rained_label")} (${p.actual.precip_mm}mm)`
+          : `${t("dry_label")} (${p.actual.precip_mm}mm)`)
+      : t("pending_label");
     // Source badge — visible only when actuals are logged
     let sourceBadge = "";
     if (p.actual && p.actual.source) {
       const sourceMap = {
-        "open_meteo": { label: "🛰️ Open-Meteo", cls: "src-om" },
-        "siata_p24h": { label: "📡 SIATA", cls: "src-siata" },
-        "agreed":     { label: "✓ Agreed",     cls: "src-agreed" },
+        "open_meteo": { label: t("source_open_meteo"), cls: "src-om" },
+        "siata_p24h": { label: t("source_siata"),      cls: "src-siata" },
+        "agreed":     { label: t("source_agreed"),     cls: "src-agreed" },
       };
       const info = sourceMap[p.actual.source] || { label: p.actual.source, cls: "" };
       sourceBadge = `<span class="src-badge ${info.cls}">${info.label}</span>`;
@@ -421,7 +532,7 @@ function renderHistory(data) {
           <div class="history-verdict ${verdictCls}">${verdict}</div>
           <div>
             <div>${date}</div>
-            <div class="history-sub">Predicted: ${p.decision} · Actual: ${actualBit} ${sourceBadge}</div>
+            <div class="history-sub">${t("predicted")}: ${p.decision} · ${t("actual")}: ${actualBit} ${sourceBadge}</div>
           </div>
         </div>
         <div class="history-score" style="color:${scoreColor(p.score)}">${p.score}</div>
@@ -431,33 +542,33 @@ function renderHistory(data) {
 
   main.innerHTML = `
     <div class="card">
-      <div class="reasons-title">Prediction Accuracy</div>
+      <div class="reasons-title">${t("prediction_accuracy")}</div>
       <div class="stats-grid">
         <div class="stat-item">
           <div class="stat-num">${accuracy}</div>
-          <div class="stat-label">accuracy</div>
+          <div class="stat-label">${t("accuracy")}</div>
         </div>
         <div class="stat-item">
           <div class="stat-num">${s.correct || 0}</div>
-          <div class="stat-label">correct</div>
+          <div class="stat-label">${t("correct")}</div>
         </div>
         <div class="stat-item">
           <div class="stat-num">${s.wrong || 0}</div>
-          <div class="stat-label">wrong</div>
+          <div class="stat-label">${t("wrong")}</div>
         </div>
         <div class="stat-item">
           <div class="stat-num">${s.pending || 0}</div>
-          <div class="stat-label">pending</div>
+          <div class="stat-label">${t("pending")}</div>
         </div>
       </div>
     </div>
 
     <div class="card">
-      <div class="reasons-title">Recent Predictions</div>
-      ${rows || '<p style="opacity:0.6;font-size:0.9rem;margin-top:0.5rem">No predictions logged yet.</p>'}
+      <div class="reasons-title">${t("recent_predictions")}</div>
+      ${rows || `<p style="opacity:0.6;font-size:0.9rem;margin-top:0.5rem">${t("no_predictions")}</p>`}
     </div>
 
-    <button class="refresh-btn" onclick="load()">Back to Today</button>
+    <button class="refresh-btn" onclick="load()">${t("back_to_today")}</button>
   `;
 }
 
@@ -465,7 +576,7 @@ async function loadHistory() {
   main.innerHTML = `
     <div class="loader" id="loader">
       <div class="spinner"></div>
-      <p>Loading history…</p>
+      <p>${t("loading_history")}</p>
     </div>
   `;
   try {
@@ -482,7 +593,7 @@ async function load(forceFresh = false) {
   main.innerHTML = `
     <div class="loader" id="loader">
       <div class="spinner"></div>
-      <p>Fetching weather data…</p>
+      <p>${t("fetching")}</p>
     </div>
   `;
 
@@ -505,4 +616,6 @@ async function load(forceFresh = false) {
 // Refresh button always forces a fresh fetch
 function refresh() { return load(true); }
 
+// Apply persisted language preference to the page chrome before first fetch
+setLanguage(LANG);
 load();

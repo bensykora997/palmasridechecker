@@ -573,3 +573,34 @@ body {
 .src-badge.src-om { background: rgba(74,168,255,0.18); color: #4aa8ff; }
 .src-badge.src-siata { background: rgba(240,160,48,0.18); color: var(--accent-orange); }
 .src-badge.src-agreed { background: rgba(46,204,113,0.18); color: var(--accent-green); }
+
+/* Language toggle — small button fixed top-right of viewport */
+.lang-toggle {
+  position: fixed;
+  top: 0.85rem;
+  right: 0.85rem;
+  z-index: 1000;
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: rgba(26, 26, 46, 0.85);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s, transform 0.1s;
+  font-family: inherit;
+}
+
+.lang-toggle:hover {
+  border-color: var(--accent-orange);
+  color: var(--accent-orange);
+}
+
+.lang-toggle:active {
+  transform: scale(0.95);
+}
