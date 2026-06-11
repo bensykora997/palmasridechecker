@@ -677,42 +677,25 @@ function refresh() { return load(true); }
 
 // ---------- User override (manual ground-truth marking) ----------
 
-function getOverrideToken() {
-  return localStorage.getItem("palmas_override_token") || "";
-}
-
-function ensureOverrideToken() {
-  let tok = getOverrideToken();
-  if (tok) return tok;
-  // eslint-disable-next-line no-alert
-  tok = prompt(t("token_prompt"));
-  if (!tok) return "";
-  tok = tok.trim();
-  localStorage.setItem("palmas_override_token", tok);
-  return tok;
-}
+// Simple shared password — kept in sync with api/override.py.
+// Light auth: deters casual abuse from someone who finds the URL,
+// no need to store/prompt for a per-user token.
+const OVERRIDE_PASSWORD = "palmas";
 
 async function postOverride(rideDate, rained) {
-  const tok = ensureOverrideToken();
-  if (!tok) {
-    alert(t("token_missing"));
-    return null;
+  // Clean up any leftover token from earlier versions of this app.
+  if (localStorage.getItem("palmas_override_token")) {
+    localStorage.removeItem("palmas_override_token");
   }
   const res = await fetch("/api/override", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${tok}`,
+      "Authorization": `Bearer ${OVERRIDE_PASSWORD}`,
     },
     body: JSON.stringify({ ride_date: rideDate, rained }),
     cache: "no-store",
   });
-  if (res.status === 401) {
-    // Bad token — wipe it so the next attempt re-prompts.
-    localStorage.removeItem("palmas_override_token");
-    alert("Unauthorized — token cleared. Try again.");
-    return null;
-  }
   if (!res.ok) {
     const txt = await res.text();
     alert(`${t("override_failed")} HTTP ${res.status} — ${txt.slice(0, 200)}`);

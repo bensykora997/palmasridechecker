@@ -6,16 +6,16 @@ POST /api/override
     - rained: null clears the override (falls back to sensor data)
   Returns: the updated prediction entry
 
-Auth: Bearer ${CRON_SECRET} — reuses the same write-token as the cron
-endpoint. The rider enters it once in the UI (saved to localStorage) and
-the History view sends it with each override request.
+Auth: a simple shared password "palmas" sent as `Authorization: Bearer palmas`.
 
-Why auth? Because this endpoint mutates predictions.json. The other
-public endpoints (/api/check, /api/history) only write data computed
-deterministically from external sources, so an attacker can at worst
-re-write the same value. An override accepts an arbitrary boolean from
-the request body, so it must be gated.
+This is intentionally lightweight — overrides are non-destructive (any
+incorrect entry can be cleared and reset by the rider), and the app is
+personal. The password is just enough to deter casual abuse from someone
+who stumbles across the URL.
 """
+
+# Override password — intentionally simple. Keep in sync with the UI.
+OVERRIDE_PASSWORD = "palmas"
 
 import sys
 import os
@@ -42,12 +42,8 @@ class handler(BaseHTTPRequestHandler):
             return None
 
     def do_POST(self):
-        secret = os.environ.get("CRON_SECRET")
-        if not secret:
-            return self._respond(500, {"error": "CRON_SECRET not configured"})
-
         auth = self.headers.get("Authorization", "")
-        if auth != f"Bearer {secret}":
+        if auth != f"Bearer {OVERRIDE_PASSWORD}":
             return self._respond(401, {"error": "unauthorized"})
 
         body = self._read_body()
