@@ -604,3 +604,92 @@ body {
 .lang-toggle:active {
   transform: scale(0.95);
 }
+
+/* ---------- History row expand + override controls ---------- */
+
+.history-row {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.history-row .history-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.history-row:hover { background: rgba(255,255,255,0.02); }
+
+.history-controls {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.2s ease, margin-top 0.2s ease;
+  opacity: 0.95;
+}
+
+.history-row.expanded .history-controls {
+  max-height: 140px;
+  margin-top: 0.6rem;
+}
+
+.override-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.4rem;
+}
+
+.override-buttons {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.override-btn {
+  flex: 1;
+  min-width: 5rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--surface-light);
+  color: var(--text);
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  font-family: inherit;
+}
+
+.override-btn:hover { border-color: var(--accent-orange); }
+
+.override-rained {
+  border-color: rgba(74,168,255,0.4);
+  color: #4aa8ff;
+}
+.override-dry {
+  border-color: rgba(46,204,113,0.4);
+  color: var(--accent-green);
+}
+.override-clear {
+  border-color: rgba(136,136,170,0.4);
+  color: var(--text-muted);
+  flex: 0 1 auto;
+}
+
+.history-override-line {
+  font-size: 0.72rem;
+  color: var(--accent-orange);
+  margin-top: 0.2rem;
+}
+
+.src-badge.src-override {
+  background: rgba(240,160,48,0.22);
+  color: var(--accent-orange);
+}
+
+.overridden-line {
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 0.6rem;
+}

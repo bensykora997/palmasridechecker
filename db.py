@@ -278,17 +278,91 @@ def save_actuals(ride_date, actual_precip_mm, actual_max_wind, actual_rained,
     if station_snapshots is not None:
         actual["station_snapshots"] = station_snapshots
     entry["actual"] = actual
-
-    decision = entry.get("decision")
-    if decision == "YES":
-        entry["correct"] = not actual_rained
-    elif decision == "NO":
-        entry["correct"] = bool(actual_rained)
-    else:
-        entry["correct"] = None
+    entry["correct"] = _compute_correct(entry)
 
     log["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
     _write_all(log)
+
+
+def _ground_truth_rained(entry):
+    """Return the best-known answer to 'did it actually rain?' for an entry.
+
+    User overrides take priority over auto-detected actuals. Returns None
+    if neither is set (entry is still pending).
+    """
+    ov = entry.get("user_override") or {}
+    if ov.get("rained") is not None:
+        return bool(ov["rained"])
+    actual = entry.get("actual") or {}
+    if actual.get("rained") is not None:
+        return bool(actual["rained"])
+    return None
+
+
+def _compute_correct(entry):
+    """Re-derive the correctness verdict from the prediction + ground truth.
+
+    Pure function over the entry's existing fields — call this any time
+    user_override or actual changes.
+    """
+    truth = _ground_truth_rained(entry)
+    if truth is None:
+        return None
+    decision = entry.get("decision")
+    if decision == "YES":
+        return not truth
+    if decision == "NO":
+        return bool(truth)
+    return None
+
+
+def set_override(ride_date, rained, note=None):
+    """Set or update the user's ground-truth override for a ride_date.
+
+    `rained` should be a bool. Pass `note` for an optional free-text comment.
+    Recomputes `correct` from the override.
+    """
+    if not is_enabled():
+        return None
+    log = _read_all()
+    preds = log.get("predictions", [])
+    by_date = _by_date(preds)
+    entry = by_date.get(ride_date)
+    if not entry:
+        return None
+
+    override = {
+        "rained": bool(rained),
+        "set_at": _now_iso(),
+    }
+    if note:
+        override["note"] = note
+    entry["user_override"] = override
+    entry["correct"] = _compute_correct(entry)
+
+    log["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
+    _write_all(log)
+    return entry
+
+
+def clear_override(ride_date):
+    """Remove the user override. `correct` falls back to the auto-detected actual."""
+    if not is_enabled():
+        return None
+    log = _read_all()
+    preds = log.get("predictions", [])
+    by_date = _by_date(preds)
+    entry = by_date.get(ride_date)
+    if not entry:
+        return None
+
+    if "user_override" in entry:
+        del entry["user_override"]
+    entry["correct"] = _compute_correct(entry)
+
+    log["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
+    _write_all(log)
+    return entry
 
 
 def fetch_history(limit=60):
@@ -300,9 +374,12 @@ def fetch_history(limit=60):
     preds = sorted(log.get("predictions", []), key=lambda p: p["ride_date"], reverse=True)
 
     total = len(preds)
-    evaluated = sum(1 for p in preds if p.get("actual") is not None)
+    # An entry counts as evaluated if we have ANY ground truth — auto-detected
+    # actual OR a user override.
+    evaluated = sum(1 for p in preds if _ground_truth_rained(p) is not None)
     correct = sum(1 for p in preds if p.get("correct") is True)
     wrong = sum(1 for p in preds if p.get("correct") is False)
+    overridden = sum(1 for p in preds if (p.get("user_override") or {}).get("rained") is not None)
     accuracy = round(100 * correct / evaluated, 1) if evaluated else None
 
     return {
@@ -313,6 +390,7 @@ def fetch_history(limit=60):
             "pending": total - evaluated,
             "correct": correct,
             "wrong": wrong,
+            "overridden": overridden,
             "accuracy_pct": accuracy,
         },
         "predictions": preds[:limit],

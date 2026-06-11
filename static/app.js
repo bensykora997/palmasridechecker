@@ -45,6 +45,17 @@ const T = {
     rained_label: "rained", dry_label: "dry", pending_label: "pending",
     popup_now: "Now", popup_route_suffix: "km from route",
     source_open_meteo: "🛰️ Open-Meteo", source_siata: "📡 SIATA", source_agreed: "✓ Agreed",
+    override_badge: "✏️ Manual",
+    override_actual: "you said",
+    override_prompt: "What actually happened?",
+    override_rained: "It rained",
+    override_dry: "It was dry",
+    override_clear: "Clear override",
+    token_prompt: "Enter the override token (CRON_SECRET value):",
+    token_missing: "No token set — override cancelled.",
+    override_saved: "Override saved.",
+    override_failed: "Couldn't save override:",
+    overridden_label: "overridden",
     vibes: [
       [90, "🚴‍♂️💨", "Kit up and clip in!", "yes"],
       [75, "🔥", "Send it, parcero!", "yes"],
@@ -97,6 +108,17 @@ const T = {
     rained_label: "llovió", dry_label: "seco", pending_label: "pendiente",
     popup_now: "Ahora", popup_route_suffix: "km de la ruta",
     source_open_meteo: "🛰️ Open-Meteo", source_siata: "📡 SIATA", source_agreed: "✓ De acuerdo",
+    override_badge: "✏️ Manual",
+    override_actual: "dijiste",
+    override_prompt: "¿Qué pasó en realidad?",
+    override_rained: "Llovió",
+    override_dry: "Estuvo seco",
+    override_clear: "Quitar marca manual",
+    token_prompt: "Ingresá el token de override (valor de CRON_SECRET):",
+    token_missing: "Sin token — se canceló la marca.",
+    override_saved: "Marca guardada.",
+    override_failed: "No se pudo guardar:",
+    overridden_label: "manuales",
     vibes: [
       [90, "🚴‍♂️💨", "¡Listos, a clavar!", "yes"],
       [75, "🔥", "¡Dale parce, mándale!", "yes"],
@@ -502,6 +524,8 @@ function renderHistory(data) {
   const s = data.stats || {};
   const accuracy = s.accuracy_pct == null ? "—" : `${s.accuracy_pct}%`;
 
+  const escapeAttr = s => String(s).replace(/"/g, "&quot;");
+
   const rows = (data.predictions || []).map(p => {
     const date = formatDate(p.ride_date);
     const verdict = p.correct === true ? "✓"
@@ -515,7 +539,8 @@ function renderHistory(data) {
           ? `${t("rained_label")} (${p.actual.precip_mm}mm)`
           : `${t("dry_label")} (${p.actual.precip_mm}mm)`)
       : t("pending_label");
-    // Source badge — visible only when actuals are logged
+
+    // Source badge (sensor-derived)
     let sourceBadge = "";
     if (p.actual && p.actual.source) {
       const sourceMap = {
@@ -526,19 +551,52 @@ function renderHistory(data) {
       const info = sourceMap[p.actual.source] || { label: p.actual.source, cls: "" };
       sourceBadge = `<span class="src-badge ${info.cls}">${info.label}</span>`;
     }
+
+    // Override badge — wins visual priority when present
+    const ov = p.user_override;
+    let overrideBadge = "";
+    let overrideLine = "";
+    if (ov && ov.rained !== undefined && ov.rained !== null) {
+      overrideBadge = `<span class="src-badge src-override">${t("override_badge")}</span>`;
+      const word = ov.rained ? t("rained_label") : t("dry_label");
+      overrideLine = `<div class="history-override-line">${t("override_actual")}: <b>${word}</b></div>`;
+    }
+
+    const rd = escapeAttr(p.ride_date);
+    const hasOverride = ov && ov.rained !== undefined && ov.rained !== null;
+    const clearBtn = hasOverride
+      ? `<button class="override-btn override-clear" onclick="event.stopPropagation(); clearOverride('${rd}')">${t("override_clear")}</button>`
+      : "";
+
     return `
-      <div class="history-row">
-        <div class="history-date">
-          <div class="history-verdict ${verdictCls}">${verdict}</div>
-          <div>
-            <div>${date}</div>
-            <div class="history-sub">${t("predicted")}: ${p.decision} · ${t("actual")}: ${actualBit} ${sourceBadge}</div>
+      <div class="history-row" data-history-row="${rd}" onclick="toggleHistoryRow('${rd}')">
+        <div class="history-summary">
+          <div class="history-date">
+            <div class="history-verdict ${verdictCls}">${verdict}</div>
+            <div>
+              <div>${date}</div>
+              <div class="history-sub">${t("predicted")}: ${p.decision} · ${t("actual")}: ${actualBit} ${overrideBadge}${sourceBadge}</div>
+              ${overrideLine}
+            </div>
+          </div>
+          <div class="history-score" style="color:${scoreColor(p.score)}">${p.score}</div>
+        </div>
+        <div class="history-controls" onclick="event.stopPropagation()">
+          <div class="override-label">${t("override_prompt")}</div>
+          <div class="override-buttons">
+            <button class="override-btn override-rained" onclick="setOverride('${rd}', true)">${t("override_rained")}</button>
+            <button class="override-btn override-dry" onclick="setOverride('${rd}', false)">${t("override_dry")}</button>
+            ${clearBtn}
           </div>
         </div>
-        <div class="history-score" style="color:${scoreColor(p.score)}">${p.score}</div>
       </div>
     `;
   }).join("");
+
+  const overrideCount = s.overridden || 0;
+  const overrideLine = overrideCount > 0
+    ? `<div class="overridden-line">${overrideCount} ${t("overridden_label")}</div>`
+    : "";
 
   main.innerHTML = `
     <div class="card">
@@ -561,6 +619,7 @@ function renderHistory(data) {
           <div class="stat-label">${t("pending")}</div>
         </div>
       </div>
+      ${overrideLine}
     </div>
 
     <div class="card">
@@ -615,6 +674,71 @@ async function load(forceFresh = false) {
 
 // Refresh button always forces a fresh fetch
 function refresh() { return load(true); }
+
+// ---------- User override (manual ground-truth marking) ----------
+
+function getOverrideToken() {
+  return localStorage.getItem("palmas_override_token") || "";
+}
+
+function ensureOverrideToken() {
+  let tok = getOverrideToken();
+  if (tok) return tok;
+  // eslint-disable-next-line no-alert
+  tok = prompt(t("token_prompt"));
+  if (!tok) return "";
+  tok = tok.trim();
+  localStorage.setItem("palmas_override_token", tok);
+  return tok;
+}
+
+async function postOverride(rideDate, rained) {
+  const tok = ensureOverrideToken();
+  if (!tok) {
+    alert(t("token_missing"));
+    return null;
+  }
+  const res = await fetch("/api/override", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${tok}`,
+    },
+    body: JSON.stringify({ ride_date: rideDate, rained }),
+    cache: "no-store",
+  });
+  if (res.status === 401) {
+    // Bad token — wipe it so the next attempt re-prompts.
+    localStorage.removeItem("palmas_override_token");
+    alert("Unauthorized — token cleared. Try again.");
+    return null;
+  }
+  if (!res.ok) {
+    const txt = await res.text();
+    alert(`${t("override_failed")} HTTP ${res.status} — ${txt.slice(0, 200)}`);
+    return null;
+  }
+  const data = await res.json();
+  return data.entry;
+}
+
+async function setOverride(rideDate, rained) {
+  const entry = await postOverride(rideDate, rained);
+  if (entry) {
+    // Refresh the history view to reflect the new verdict
+    await loadHistory();
+  }
+}
+
+function clearOverride(rideDate) {
+  return setOverride(rideDate, null);
+}
+
+function toggleHistoryRow(rideDate) {
+  const el = document.querySelector(`[data-history-row="${rideDate}"]`);
+  if (!el) return;
+  el.classList.toggle("expanded");
+}
 
 // Apply persisted language preference to the page chrome before first fetch
 setLanguage(LANG);
