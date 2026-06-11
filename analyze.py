@@ -91,7 +91,22 @@ def analyze_stations(pluvio):
             active.append(s)
             raining_via = raining_via or source
 
-    offline = [s for s in stations if s.get("value") == -999]
+    # A station is "offline" if either: its summary value is -999, OR its
+    # detail-file rainfall sensors are all -999 (zombie sensor reporting a
+    # stale residual `valor` while the real sensor is dead). This matches
+    # the per-station `offline` flag the map UI uses, so the count in
+    # data_sources.siata_stations.offline agrees with what users see on
+    # the map.
+    def _offline(s):
+        if s.get("value") == -999:
+            return True
+        # detail_available=False means we never got a detail file; conservative
+        # default — don't count as offline if we can't tell.
+        if s.get("detail_available") is False:
+            return False
+        return s.get("sensor_live") is False
+
+    offline = [s for s in stations if _offline(s)]
     trace = [s for s in stations
              if 0 < (s.get("value") or 0) < RAIN_THRESHOLD_MM and s.get("value") != -999
              and not any(_val(s, k) is not None and _val(s, k) >= RAIN_THRESHOLD_MM for k in ("p10m", "p1h"))]
