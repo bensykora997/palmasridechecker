@@ -29,6 +29,7 @@ from analyze import (
 from config import RIDE_EARLIEST, RIDE_LATEST
 from timeutil import today_str
 import db
+import calibrate
 
 
 def _summarize_forecast(open_meteo):
@@ -109,6 +110,20 @@ def run_cron():
 
         avg_prob, max_wind, avg_hum, overnight = _summarize_forecast(open_meteo)
         ride_date = get_tomorrow_date()
+
+        # Shadow prediction: what the calibration model (as trained on prior
+        # nights) would say for this same forecast. Recorded so the shadow
+        # model accrues its own real-time track record.
+        shadow = None
+        try:
+            cal_state = db.read_calibration()
+            feats = [avg_prob, max_wind, avg_hum, overnight]
+            if any(f is None for f in feats):
+                feats = None
+            shadow = calibrate.apply_calibration(cal_state, scored["score"], feats)
+        except Exception as e:
+            result["errors"].append(f"shadow: {e}")
+
         db.save_prediction(
             ride_date=ride_date,
             score=scored["score"],
@@ -120,11 +135,13 @@ def run_cron():
             forecast_avg_humidity=avg_hum,
             forecast_overnight_precip_mm=overnight,
             station_snapshots=_station_snapshots(pluvio),
+            shadow=shadow,
         )
         result["logged"] = {
             "ride_date": ride_date,
             "decision": scored["decision"],
             "score": scored["score"],
+            "shadow": shadow,
         }
     except Exception as e:
         result["errors"].append(f"log_prediction: {e}")
@@ -199,6 +216,19 @@ def run_cron():
             })
     except Exception as e:
         result["errors"].append(f"backfill: {e}")
+
+    # 3) Retrain the shadow calibration model on the full (now-updated) log.
+    try:
+        from timeutil import now_bogota
+        entries = db._read_all().get("predictions", [])
+        cal = calibrate.train_calibration(
+            entries, trained_at=now_bogota().isoformat(timespec="seconds"))
+        db.write_calibration(cal)
+        result["calibration"] = {"stage": cal.get("stage"),
+                                 "n_evaluated": cal.get("n_evaluated"),
+                                 "n_rained": cal.get("n_rained")}
+    except Exception as e:
+        result["errors"].append(f"calibration: {e}")
 
     return result
 

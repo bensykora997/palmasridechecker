@@ -24,6 +24,7 @@ from timeutil import today_str, now_bogota
 # New Vercel Blob HTTP API (private stores live here, not blob.vercel-storage.com).
 BLOB_API_BASE = "https://vercel.com/api/blob"
 BLOB_PATHNAME = "predictions.json"
+CALIBRATION_PATHNAME = "calibration.json"
 BLOB_API_VERSION = os.environ.get("BLOB_API_VERSION", "12")
 
 
@@ -86,8 +87,8 @@ def _list_blobs(prefix):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _find_url():
-    """Return a CDN-cache-bypassing URL for predictions.json, or None.
+def _find_url(pathname=BLOB_PATHNAME):
+    """Return a CDN-cache-bypassing URL for `pathname`, or None.
 
     Vercel Blob serves the blob URL through a CDN that caches for up to
     60 seconds even with `cache-control: private`, which causes stale
@@ -97,13 +98,13 @@ def _find_url():
     the cache key changes too and we get fresh content automatically.
     """
     try:
-        data = _list_blobs(BLOB_PATHNAME)
+        data = _list_blobs(pathname)
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
         raise
     for b in data.get("blobs", []):
-        if b.get("pathname") == BLOB_PATHNAME:
+        if b.get("pathname") == pathname:
             base = b.get("url")
             etag = (b.get("etag") or "").strip('"')
             if base and etag:
@@ -113,11 +114,12 @@ def _find_url():
     return None
 
 
-def _read_all():
-    """Read the full prediction log from blob. Returns {'predictions': [...]}."""
-    url = _find_url()
+def _read_blob(pathname, default):
+    """Read and JSON-parse `pathname` from the blob store. Returns `default`
+    if the blob doesn't exist or can't be parsed."""
+    url = _find_url(pathname)
     if not url:
-        return {"predictions": []}
+        return default
     # Private blob URLs require the bearer token to download.
     req = urllib.request.Request(url, headers={
         "user-agent": "PalmasRide/1.0",
@@ -127,13 +129,13 @@ def _read_all():
         try:
             return json.loads(resp.read().decode("utf-8"))
         except json.JSONDecodeError:
-            return {"predictions": []}
+            return default
 
 
-def _write_all(data):
-    """Overwrite predictions.json in the blob store with `data`."""
+def _write_blob(pathname, data):
+    """Overwrite `pathname` in the blob store with `data` (JSON-serialized)."""
     body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-    url = f"{BLOB_API_BASE}/?pathname={urllib.parse.quote(BLOB_PATHNAME)}"
+    url = f"{BLOB_API_BASE}/?pathname={urllib.parse.quote(pathname)}"
     headers = {
         **_api_headers(),
         "x-vercel-blob-access": "private",
@@ -147,6 +149,32 @@ def _write_all(data):
     req = urllib.request.Request(url, data=body, method="PUT", headers=headers)
     with _do_request(req, "blob put") as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _read_all():
+    """Read the full prediction log from blob. Returns {'predictions': [...]}."""
+    return _read_blob(BLOB_PATHNAME, {"predictions": []})
+
+
+def _write_all(data):
+    """Overwrite predictions.json in the blob store with `data`."""
+    return _write_blob(BLOB_PATHNAME, data)
+
+
+# ---------- Calibration state (calibration.json) ----------
+
+def read_calibration():
+    """Return the stored calibration state dict, or None if not yet trained."""
+    if not is_enabled():
+        return None
+    return _read_blob(CALIBRATION_PATHNAME, None)
+
+
+def write_calibration(state):
+    """Persist the calibration state dict to calibration.json."""
+    if not is_enabled():
+        return
+    _write_blob(CALIBRATION_PATHNAME, state)
 
 
 # ---------- Public API (same shape as the original) ----------
@@ -167,7 +195,7 @@ def _by_date(predictions):
 def save_prediction(ride_date, score, decision, confidence, reasons,
                     forecast_avg_precip_prob=None, forecast_max_wind=None,
                     forecast_avg_humidity=None, forecast_overnight_precip_mm=None,
-                    station_snapshots=None):
+                    station_snapshots=None, shadow=None):
     """Save or update the prediction for ride_date.
 
     Updates only if actuals haven't been filled in yet — once a day is
@@ -175,6 +203,10 @@ def save_prediction(ride_date, score, decision, confidence, reasons,
 
     station_snapshots: optional list of {name, code, valor, p10m, p1h, p24h}
     captured from SIATA at prediction time. Used for the audit trail.
+
+    shadow: optional {shadow_decision, shadow_prob_rain, shadow_basis, stage}
+    — what the calibration model (as trained at the time) would have predicted.
+    Recorded so the shadow model accrues its own real-time track record.
     """
     if not is_enabled():
         return
@@ -208,6 +240,11 @@ def save_prediction(ride_date, score, decision, confidence, reasons,
         "actual": existing.get("actual") if existing else None,
         "correct": existing.get("correct") if existing else None,
     }
+    # Preserve an existing shadow if the caller didn't supply a fresh one.
+    if shadow is not None:
+        entry["shadow"] = shadow
+    elif existing and existing.get("shadow") is not None:
+        entry["shadow"] = existing["shadow"]
 
     by_date[ride_date] = entry
     log["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])

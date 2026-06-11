@@ -693,3 +693,79 @@ body {
   color: var(--text-muted);
   margin-top: 0.6rem;
 }
+
+/* ---------- Shadow line (main view) ---------- */
+.shadow-line {
+  text-align: center;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-top: 0.6rem;
+}
+.shadow-line b { color: var(--text); font-style: normal; }
+
+/* ---------- Self-calibration panel (history) ---------- */
+.cal-card { }
+
+.cal-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.cal-row:last-of-type { border-bottom: none; }
+.cal-row span:first-child { color: var(--text-muted); }
+.cal-row span:last-child { font-weight: 600; }
+
+.cal-gathering { padding: 0.5rem 0; }
+.cal-stage-line { font-weight: 700; font-size: 1rem; color: var(--accent-orange); }
+.cal-sub { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; }
+
+.cal-acc-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1fr;
+  gap: 0.35rem 0.5rem;
+  margin: 0.8rem 0 0.4rem;
+  align-items: center;
+}
+.cal-acc-head {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  text-align: right;
+}
+.cal-acc-head:first-child { text-align: left; }
+.cal-acc-name { font-size: 0.82rem; color: var(--text-muted); }
+.cal-acc-val { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cal-acc-val.cal-hi { color: var(--accent-green); }
+
+.cal-weights-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-top: 0.6rem;
+  margin-bottom: 0.3rem;
+}
+.cal-weights { display: flex; flex-direction: column; gap: 0.2rem; }
+.cal-weight {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+.cal-weight span:first-child { color: var(--text-muted); }
+.cal-weight span:last-child { font-weight: 600; }
+
+.cal-note {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-top: 0.8rem;
+  line-height: 1.4;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}

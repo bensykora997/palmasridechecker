@@ -3,10 +3,40 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import json
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from fetch_openmeteo import fetch_actuals_for_date
 from fetch_siata import fetch_pluviometrica
+from timeutil import now_bogota
 import db
+import calibrate
+
+CALIBRATION_STALE_SECONDS = 24 * 3600
+
+
+def _maybe_retrain_calibration():
+    """Retrain the shadow model if the stored calibration is missing or older
+    than 24h. Mirrors the opportunistic-backfill pattern so the panel stays
+    fresh even between nightly cron runs. Returns the (possibly new) state."""
+    cal = db.read_calibration()
+    stale = True
+    ts = (cal or {}).get("trained_at")
+    if ts:
+        try:
+            # trained_at is an ISO string with tz offset (Bogota). Compare in UTC.
+            parsed = datetime.fromisoformat(ts)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age = (now_bogota() - parsed).total_seconds()
+            stale = age > CALIBRATION_STALE_SECONDS
+        except Exception:
+            stale = True
+    if stale:
+        entries = db._read_all().get("predictions", [])
+        cal = calibrate.train_calibration(
+            entries, trained_at=now_bogota().isoformat(timespec="seconds"))
+        db.write_calibration(cal)
+    return cal
 
 
 def _backfill_pending():
@@ -71,6 +101,11 @@ class handler(BaseHTTPRequestHandler):
                 db.init_schema()
                 _backfill_pending()
             data = db.fetch_history(limit=60)
+            if db.is_enabled():
+                try:
+                    data["calibration"] = _maybe_retrain_calibration()
+                except Exception as e:
+                    data["calibration"] = {"error": str(e)}
         except Exception as e:
             data = {"enabled": False, "error": str(e), "predictions": [], "stats": None}
 

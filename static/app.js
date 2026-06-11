@@ -56,6 +56,26 @@ const T = {
     override_saved: "Override saved.",
     override_failed: "Couldn't save override:",
     overridden_label: "overridden",
+    shadow_prefix: "Learned model would say",
+    shadow_rain_suffix: "rain",
+    calibration_title: "Self-Calibration",
+    cal_stage: "Stage",
+    cal_gathering: "Gathering data",
+    cal_stage_threshold: "Threshold tuning",
+    cal_stage_probability: "Probability",
+    cal_stage_weights: "Weight learning",
+    cal_data: "Evaluated days",
+    cal_next_unlock: "Next unlock",
+    cal_at: "at",
+    cal_days: "days",
+    cal_rained: "rained",
+    cal_hand_tuned: "Hand-tuned",
+    cal_calibrated: "Calibrated",
+    cal_accuracy: "accuracy",
+    cal_balanced: "balanced",
+    cal_threshold_learned: "Learned cutoff",
+    cal_weights_learned: "Learned weights",
+    cal_shadow_note: "Shadow mode — the hand-tuned formula still drives the decision shown above. This panel shows what a model trained on your logged outcomes would do.",
     vibes: [
       [90, "🚴‍♂️💨", "Kit up and clip in!", "yes"],
       [75, "🔥", "Send it, parcero!", "yes"],
@@ -119,6 +139,26 @@ const T = {
     override_saved: "Marca guardada.",
     override_failed: "No se pudo guardar:",
     overridden_label: "manuales",
+    shadow_prefix: "El modelo aprendido diría",
+    shadow_rain_suffix: "lluvia",
+    calibration_title: "Auto-calibración",
+    cal_stage: "Etapa",
+    cal_gathering: "Recolectando datos",
+    cal_stage_threshold: "Ajuste de umbral",
+    cal_stage_probability: "Probabilidad",
+    cal_stage_weights: "Aprendizaje de pesos",
+    cal_data: "Días evaluados",
+    cal_next_unlock: "Próximo nivel",
+    cal_at: "a los",
+    cal_days: "días",
+    cal_rained: "con lluvia",
+    cal_hand_tuned: "Manual",
+    cal_calibrated: "Calibrado",
+    cal_accuracy: "precisión",
+    cal_balanced: "balanceada",
+    cal_threshold_learned: "Umbral aprendido",
+    cal_weights_learned: "Pesos aprendidos",
+    cal_shadow_note: "Modo sombra — la fórmula manual sigue decidiendo lo de arriba. Este panel muestra qué haría un modelo entrenado con tus resultados registrados.",
     vibes: [
       [90, "🚴‍♂️💨", "¡Listos, a clavar!", "yes"],
       [75, "🔥", "¡Dale parce, mándale!", "yes"],
@@ -196,6 +236,16 @@ function render(data) {
   const updatedAt = now.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const confidenceLabel = t("confidence_" + data.confidence) || data.confidence;
 
+  // Shadow line — what the self-calibrating model would say (display only)
+  let shadowLine = "";
+  const sh = data.calibration_shadow;
+  if (sh && sh.shadow_decision) {
+    const pct = (sh.shadow_prob_rain != null)
+      ? ` (${Math.round(sh.shadow_prob_rain * 100)}% ${t("shadow_rain_suffix")})`
+      : "";
+    shadowLine = `<div class="shadow-line">${t("shadow_prefix")}: <b>${sh.shadow_decision}</b>${pct}</div>`;
+  }
+
   main.innerHTML = `
     <div class="card">
       <div class="decision-hero">
@@ -219,6 +269,8 @@ function render(data) {
       <div class="confidence-row">
         <span class="badge ${data.confidence}">${t("confidence")}: ${confidenceLabel}</span>
       </div>
+
+      ${shadowLine}
 
       <div class="window-card">
         <div class="window-icon">🕐</div>
@@ -507,6 +559,94 @@ function renderDetails(data) {
   initRadarMap();
 }
 
+// ---------- Self-calibration panel ----------
+
+function _pct(v) {
+  return (v == null) ? "—" : `${Math.round(v * 100)}%`;
+}
+
+function calibrationPanel(cal) {
+  if (!cal || cal.error) return "";
+
+  const stageNames = {
+    gathering: t("cal_gathering"),
+    threshold: t("cal_stage_threshold"),
+    probability: t("cal_stage_probability"),
+    weights: t("cal_stage_weights"),
+  };
+  const stageLabel = stageNames[cal.stage] || cal.stage;
+
+  // Gathering state — just show what's needed.
+  if (cal.stage === "gathering") {
+    const nu = cal.next_unlock || {};
+    return `
+      <div class="card cal-card">
+        <div class="reasons-title">${t("calibration_title")}</div>
+        <div class="cal-gathering">
+          <div class="cal-stage-line">${t("cal_gathering")}</div>
+          <div class="cal-sub">${cal.reason || ""}</div>
+          <div class="cal-sub">${t("cal_data")}: ${cal.n_evaluated || 0} · ${cal.n_rained || 0} ${t("cal_rained")}</div>
+        </div>
+        <div class="cal-note">${t("cal_shadow_note")}</div>
+      </div>
+    `;
+  }
+
+  const base = cal.baseline || {};
+  const c = cal.calibrated || {};
+  const stageIdx = cal.stage_index || 1;
+
+  // Next-unlock hint
+  let unlockLine = "";
+  if (cal.next_unlock) {
+    const nu = cal.next_unlock;
+    const at = nu.at_evaluated || nu.at_featured;
+    const unlockStage = stageNames[nu.stage] || nu.stage;
+    unlockLine = `<div class="cal-row"><span>${t("cal_next_unlock")}</span><span>${unlockStage} ${t("cal_at")} ${at} ${t("cal_days")}</span></div>`;
+  }
+
+  // Learned-model specifics by stage
+  let learned = "";
+  if (cal.stage === "threshold" && c.threshold != null) {
+    learned = `<div class="cal-row"><span>${t("cal_threshold_learned")}</span><span>${c.threshold} (${t("cal_hand_tuned")}: ${base.threshold})</span></div>`;
+  } else if (cal.stage === "weights" && c.weights && c.weights.coef) {
+    const keys = (c.feature_keys || []);
+    const items = c.weights.coef.map((coef, i) =>
+      `<div class="cal-weight"><span>${keys[i] || ("f" + i)}</span><span>${coef >= 0 ? "+" : ""}${coef.toFixed(2)}</span></div>`
+    ).join("");
+    learned = `<div class="cal-weights-label">${t("cal_weights_learned")}</div><div class="cal-weights">${items}</div>`;
+  }
+
+  // Accuracy comparison — show both raw and balanced
+  const accTable = `
+    <div class="cal-acc-grid">
+      <div class="cal-acc-head"></div>
+      <div class="cal-acc-head">${t("cal_accuracy")}</div>
+      <div class="cal-acc-head">${t("cal_balanced")}</div>
+
+      <div class="cal-acc-name">${t("cal_hand_tuned")}</div>
+      <div class="cal-acc-val">${_pct(base.accuracy)}</div>
+      <div class="cal-acc-val">${_pct(base.balanced_accuracy)}</div>
+
+      <div class="cal-acc-name">${t("cal_calibrated")}</div>
+      <div class="cal-acc-val cal-hi">${_pct(c.accuracy)}</div>
+      <div class="cal-acc-val cal-hi">${_pct(c.balanced_accuracy)}</div>
+    </div>
+  `;
+
+  return `
+    <div class="card cal-card">
+      <div class="reasons-title">${t("calibration_title")}</div>
+      <div class="cal-row"><span>${t("cal_stage")}</span><span>${stageLabel} (${stageIdx}/3)</span></div>
+      <div class="cal-row"><span>${t("cal_data")}</span><span>${cal.n_evaluated} · ${cal.n_rained} ${t("cal_rained")}</span></div>
+      ${unlockLine}
+      ${accTable}
+      ${learned}
+      <div class="cal-note">${t("cal_shadow_note")}</div>
+    </div>
+  `;
+}
+
 function renderHistory(data) {
   if (!data.enabled) {
     main.innerHTML = `
@@ -621,6 +761,8 @@ function renderHistory(data) {
       </div>
       ${overrideLine}
     </div>
+
+    ${calibrationPanel(data.calibration)}
 
     <div class="card">
       <div class="reasons-title">${t("recent_predictions")}</div>

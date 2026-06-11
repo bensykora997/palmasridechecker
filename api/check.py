@@ -15,6 +15,7 @@ from analyze import (
 from config import RIDE_EARLIEST, RIDE_LATEST, PALMAS_ROUTE_SEGMENTS
 from timeutil import today_str
 import db
+import calibrate
 
 
 def _summarize_forecast(open_meteo):
@@ -135,6 +136,21 @@ def build_result():
                 }
                 for s in pluvio.get("stations", [])
             ]
+
+            # Shadow prediction from the stored calibration model (read-only
+            # here; the cron retrains nightly). Surfaced in the response and
+            # recorded on the entry for the shadow model's own track record.
+            shadow = None
+            try:
+                cal_state = db.read_calibration()
+                feats = [avg_prob, max_wind, avg_hum, overnight]
+                if any(f is None for f in feats):
+                    feats = None
+                shadow = calibrate.apply_calibration(cal_state, result["score"], feats)
+            except Exception as e:
+                print(f"[calibration] shadow skipped: {e}")
+            response["calibration_shadow"] = shadow
+
             db.save_prediction(
                 ride_date=get_tomorrow_date(),
                 score=result["score"],
@@ -146,6 +162,7 @@ def build_result():
                 forecast_avg_humidity=avg_hum,
                 forecast_overnight_precip_mm=overnight,
                 station_snapshots=station_snapshots,
+                shadow=shadow,
             )
             # Backfill any past predictions with observed weather. Mirror the
             # dual-source logic in api/cron.py so opportunistic backfill
