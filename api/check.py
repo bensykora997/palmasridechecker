@@ -10,10 +10,10 @@ from fetch_air import fetch_air_quality
 from analyze import (
     analyze_radar, analyze_stations, analyze_wrf,
     get_time_window, analyze_road_conditions, compute_score,
-    get_tomorrow_date,
+    get_target_date,
 )
 from config import RIDE_EARLIEST, RIDE_LATEST, PALMAS_ROUTE_SEGMENTS
-from timeutil import today_str
+from timeutil import today_str, evening_before, framing as get_framing
 import db
 import calibrate
 
@@ -22,10 +22,10 @@ def _summarize_forecast(open_meteo):
     """Pull the headline forecast inputs the model used."""
     if not open_meteo.get("available") or not open_meteo.get("hours"):
         return None, None, None, None
-    tomorrow = get_tomorrow_date()
+    target = get_target_date()
     morning = [
         h for h in open_meteo["hours"]
-        if h["date"] == tomorrow and RIDE_EARLIEST <= h["hour"] <= RIDE_LATEST
+        if h["date"] == target and RIDE_EARLIEST <= h["hour"] <= RIDE_LATEST
     ]
     if not morning:
         return None, None, None, None
@@ -33,11 +33,11 @@ def _summarize_forecast(open_meteo):
     max_wind = max(h["wind_speed"] for h in morning)
     avg_hum = sum(h["humidity"] for h in morning) / len(morning)
 
-    today = today_str()
+    prev_evening = evening_before(target)
     pre_ride = [
         h for h in open_meteo["hours"]
-        if (h["date"] == today and h["hour"] >= 20)
-        or (h["date"] == tomorrow and h["hour"] < RIDE_EARLIEST)
+        if (h["date"] == prev_evening and h["hour"] >= 20)
+        or (h["date"] == target and h["hour"] < RIDE_EARLIEST)
     ]
     overnight = sum(h["precip"] for h in pre_ride) if pre_ride else 0
     return round(avg_prob, 1), round(max_wind, 1), round(avg_hum, 1), round(overnight, 2)
@@ -72,7 +72,10 @@ def build_result():
             "factors": road["factors"],
         },
         "reasons": result["reasons"],
-        "tomorrow_date": get_tomorrow_date(),
+        "target_date": get_target_date(),
+        "framing": get_framing(),
+        # Alias kept for one release so a cached older frontend still renders.
+        "tomorrow_date": get_target_date(),
         "data_sources": {
             "siata_stations": {
                 "count": station_analysis["station_count"],
@@ -151,8 +154,12 @@ def build_result():
                 print(f"[calibration] shadow skipped: {e}")
             response["calibration_shadow"] = shadow
 
+            # A pre-dawn ("this morning") view re-scores today's ride; log it
+            # as an observation only — the night-before canonical prediction
+            # stays frozen and is what calibration grades.
+            is_morning = get_framing() == "this_morning"
             db.save_prediction(
-                ride_date=get_tomorrow_date(),
+                ride_date=get_target_date(),
                 score=result["score"],
                 decision=result["decision"],
                 confidence=result["confidence"],
@@ -163,6 +170,7 @@ def build_result():
                 forecast_overnight_precip_mm=overnight,
                 station_snapshots=station_snapshots,
                 shadow=shadow,
+                morning=is_morning,
             )
             # Backfill any past predictions with observed weather. Mirror the
             # dual-source logic in api/cron.py so opportunistic backfill

@@ -5,6 +5,13 @@ const main = document.getElementById("main");
 const T = {
   en: {
     subtitle: "Alto de Palmas · Medellín · Tomorrow morning",
+    subtitle_today: "Alto de Palmas · Medellín · This morning",
+    subtitle_tomorrow: "Alto de Palmas · Medellín · Tomorrow morning",
+    framing_this_morning: "This morning",
+    framing_tomorrow_morning: "Tomorrow morning",
+    share: "Share",
+    share_yes: "YES", share_no: "NO",
+    offline_banner: "Offline — showing last update from",
     score_label: "Ride Score",
     confidence: "Confidence",
     confidence_high: "high", confidence_medium: "medium", confidence_low: "low",
@@ -88,6 +95,13 @@ const T = {
   },
   es: {
     subtitle: "Alto de Palmas · Medellín · Mañana por la mañana",
+    subtitle_today: "Alto de Palmas · Medellín · Esta mañana",
+    subtitle_tomorrow: "Alto de Palmas · Medellín · Mañana por la mañana",
+    framing_this_morning: "Esta mañana",
+    framing_tomorrow_morning: "Mañana por la mañana",
+    share: "Compartir",
+    share_yes: "SÍ", share_no: "NO",
+    offline_banner: "Sin conexión — última actualización de las",
     score_label: "Puntaje de salida",
     confidence: "Confianza",
     confidence_high: "alta", confidence_medium: "media", confidence_low: "baja",
@@ -193,6 +207,38 @@ function formatDate(dateStr) {
   return d.toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long" });
 }
 
+// Which day's morning the prediction is for. Falls back to "tomorrow_morning".
+function framingOf(data) {
+  return (data && data.framing) || "tomorrow_morning";
+}
+function framingLabel(data) {
+  return t("framing_" + framingOf(data));
+}
+
+// ---------- WhatsApp / native share ----------
+
+const APP_URL = "https://palmasridechecker.vercel.app";
+
+function buildShareText(data) {
+  const yn = data.decision === "YES" ? t("share_yes") : t("share_no");
+  const when = framingLabel(data).toLowerCase();
+  // e.g. "🚴 Palmas — esta mañana: SÍ 92/100 · 05:00–07:30"
+  return `🚴 Palmas — ${when}: ${yn} ${data.score}/100 · 05:00–07:30\n${APP_URL}`;
+}
+
+async function share() {
+  const data = window.__lastData;
+  if (!data) return;
+  const text = buildShareText(data);
+  // Prefer the native share sheet (includes WhatsApp on mobile).
+  if (navigator.share) {
+    try { await navigator.share({ text }); return; }
+    catch (e) { if (e && e.name === "AbortError") return; /* else fall through */ }
+  }
+  // Fallback: open WhatsApp directly.
+  window.open("https://wa.me/?text=" + encodeURIComponent(text), "_blank");
+}
+
 function scoreColor(score) {
   if (score >= 70) return "var(--accent-green)";
   if (score >= 40) return "var(--accent-orange)";
@@ -235,6 +281,14 @@ function render(data) {
   const locale = LANG === "en" ? "en-US" : "es-CO";
   const updatedAt = now.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const confidenceLabel = t("confidence_" + data.confidence) || data.confidence;
+  const targetDate = data.target_date || data.tomorrow_date;
+
+  // Framing-aware subtitle ("This morning" vs "Tomorrow morning")
+  const subtitleEl = document.querySelector(".subtitle");
+  if (subtitleEl) {
+    subtitleEl.textContent = framingOf(data) === "this_morning"
+      ? t("subtitle_today") : t("subtitle_tomorrow");
+  }
 
   // Shadow line — what the self-calibrating model would say (display only)
   let shadowLine = "";
@@ -253,7 +307,7 @@ function render(data) {
         <div class="decision-text ${vibe.cls}">
           ${vibe.text}
         </div>
-        <div class="decision-date">${formatDate(data.tomorrow_date)}</div>
+        <div class="decision-date">${framingLabel(data)} · ${formatDate(targetDate)}</div>
       </div>
 
       <div class="score-section">
@@ -350,6 +404,7 @@ function render(data) {
 
     <div class="actions-row">
       <button class="refresh-btn" onclick="refresh()">${t("refresh")}</button>
+      <button class="refresh-btn secondary" onclick="share()">${t("share")}</button>
       <button class="refresh-btn secondary" id="detailsBtn" onclick="toggleDetails()">${t("more_details")}</button>
       <button class="refresh-btn secondary" onclick="loadHistory()">${t("history")}</button>
     </div>
@@ -808,10 +863,39 @@ async function load(forceFresh = false) {
     const res = await fetch(url, { cache: forceFresh ? "no-store" : "default" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
+    // Stash the last good prediction for the offline fallback.
+    try {
+      localStorage.setItem("palmas_last_check",
+        JSON.stringify({ data, at: Date.now() }));
+    } catch (e) { /* quota / private mode — ignore */ }
     render(data);
   } catch (err) {
-    renderError(err.message);
+    // Offline / network failure: fall back to the last good prediction with a
+    // banner, instead of an error. Critical for the spotty-signal 4am case.
+    const cached = _loadCachedCheck();
+    if (cached) {
+      render(cached.data);
+      _showOfflineBanner(cached.at);
+    } else {
+      renderError(err.message);
+    }
   }
+}
+
+function _loadCachedCheck() {
+  try {
+    const raw = localStorage.getItem("palmas_last_check");
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) { return null; }
+}
+
+function _showOfflineBanner(atMs) {
+  const locale = LANG === "en" ? "en-US" : "es-CO";
+  const when = new Date(atMs).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+  const div = document.createElement("div");
+  div.className = "offline-banner";
+  div.textContent = `${t("offline_banner")} ${when}`;
+  main.prepend(div);
 }
 
 // Refresh button always forces a fresh fetch

@@ -1,10 +1,17 @@
 from datetime import datetime, timedelta
 from config import SCORING, RIDE_EARLIEST, RIDE_LATEST, RIDE_WINDOW_LABEL
-from timeutil import now_bogota, today_str, tomorrow_str
+from timeutil import now_bogota, today_str, tomorrow_str, target_date_str, evening_before
 
 
+def get_target_date():
+    """The date being predicted for — time-aware: today's morning before the
+    08:00 cutoff, tomorrow's after. See timeutil.target_date_str()."""
+    return target_date_str()
+
+
+# Backwards-compatible alias (older call sites / external refs).
 def get_tomorrow_date():
-    return tomorrow_str()
+    return get_target_date()
 
 
 def fmt_hour(h):
@@ -227,13 +234,15 @@ def analyze_road_conditions(open_meteo, station_analysis):
 
     # Check recent hours from Open-Meteo (last 6 hours before ride)
     if open_meteo["available"] and open_meteo["hours"]:
-        tomorrow = get_tomorrow_date()
-        # Hours leading up to ride: previous evening + overnight (23:00 today through 04:00 tomorrow)
-        today = today_str()
+        target = get_target_date()
+        # Hours leading up to the target ride: the evening before (20:00+) through
+        # the overnight hours of the ride day (before RIDE_EARLIEST). Relative to
+        # the target date so it shifts correctly for the "this morning" view.
+        prev_evening = evening_before(target)
         pre_ride = [
             h for h in open_meteo["hours"]
-            if (h["date"] == today and h["hour"] >= 20)
-            or (h["date"] == tomorrow and h["hour"] < RIDE_EARLIEST)
+            if (h["date"] == prev_evening and h["hour"] >= 20)
+            or (h["date"] == target and h["hour"] < RIDE_EARLIEST)
         ]
 
         if pre_ride:

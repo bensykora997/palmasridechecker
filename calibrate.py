@@ -62,6 +62,9 @@ def entry_label(entry):
 
 
 def entry_score(entry):
+    # Always the canonical (night-before) score. The `morning` slot is a
+    # pre-dawn re-score kept as observational data only and is deliberately
+    # NOT used for calibration — we grade the actionable planning call.
     s = entry.get("score")
     return float(s) if isinstance(s, (int, float)) else None
 

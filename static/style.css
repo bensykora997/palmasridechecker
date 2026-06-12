@@ -769,3 +769,19 @@ body {
   padding-top: 0.6rem;
   border-top: 1px solid var(--border);
 }
+
+/* Offline fallback banner */
+.offline-banner {
+  background: rgba(240,160,48,0.15);
+  border: 1px solid var(--accent-orange);
+  color: var(--accent-orange);
+  border-radius: 0.75rem;
+  padding: 0.6rem 0.9rem;
+  font-size: 0.8rem;
+  text-align: center;
+  margin-bottom: 1rem;
+}
+
+/* Actions row now holds 4 buttons — let them wrap on narrow screens */
+.actions-row { flex-wrap: wrap; }
+.actions-row .refresh-btn { min-width: 6rem; }

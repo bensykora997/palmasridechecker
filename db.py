@@ -195,7 +195,7 @@ def _by_date(predictions):
 def save_prediction(ride_date, score, decision, confidence, reasons,
                     forecast_avg_precip_prob=None, forecast_max_wind=None,
                     forecast_avg_humidity=None, forecast_overnight_precip_mm=None,
-                    station_snapshots=None, shadow=None):
+                    station_snapshots=None, shadow=None, morning=False):
     """Save or update the prediction for ride_date.
 
     Updates only if actuals haven't been filled in yet — once a day is
@@ -207,6 +207,14 @@ def save_prediction(ride_date, score, decision, confidence, reasons,
     shadow: optional {shadow_decision, shadow_prob_rain, shadow_basis, stage}
     — what the calibration model (as trained at the time) would have predicted.
     Recorded so the shadow model accrues its own real-time track record.
+
+    morning: when True this is a pre-dawn ("this morning") re-score. The
+    canonical night-before prediction (score/decision/shadow/correct) is left
+    UNTOUCHED and the re-score is recorded in a separate `morning` slot as
+    observational data only. Calibration grades the canonical prediction, not
+    the morning slot. If no canonical entry exists yet (night-before run was
+    missed), we fall back to writing it as canonical so there's always
+    something to grade.
     """
     if not is_enabled():
         return
@@ -218,6 +226,21 @@ def save_prediction(ride_date, score, decision, confidence, reasons,
 
     if existing and existing.get("actual") is not None:
         return  # already finalized — don't overwrite
+
+    # Morning observation: don't disturb the canonical prediction.
+    if morning and existing is not None:
+        existing["morning"] = {
+            "score": score,
+            "decision": decision,
+            "confidence": confidence,
+            "shadow": shadow,
+            "at": _now_iso(),
+        }
+        existing["last_updated_at"] = _now_iso()
+        by_date[ride_date] = existing
+        log["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
+        _write_all(log)
+        return
 
     forecast = {
         "avg_precip_prob": forecast_avg_precip_prob,
@@ -245,6 +268,16 @@ def save_prediction(ride_date, score, decision, confidence, reasons,
         entry["shadow"] = shadow
     elif existing and existing.get("shadow") is not None:
         entry["shadow"] = existing["shadow"]
+    # Preserve any existing morning observation across canonical refreshes.
+    if existing and existing.get("morning") is not None:
+        entry["morning"] = existing["morning"]
+    # Edge case: morning re-score with no prior canonical entry — mirror it
+    # into the morning slot too, so the observation is still captured.
+    if morning:
+        entry["morning"] = {
+            "score": score, "decision": decision,
+            "confidence": confidence, "shadow": shadow, "at": _now_iso(),
+        }
 
     by_date[ride_date] = entry
     log["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])

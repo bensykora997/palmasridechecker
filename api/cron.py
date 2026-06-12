@@ -24,10 +24,10 @@ from fetch_openmeteo import fetch_openmeteo, fetch_actuals_for_date
 from analyze import (
     analyze_radar, analyze_stations, analyze_wrf,
     get_time_window, analyze_road_conditions, compute_score,
-    get_tomorrow_date,
+    get_target_date,
 )
 from config import RIDE_EARLIEST, RIDE_LATEST
-from timeutil import today_str
+from timeutil import today_str, evening_before, framing as get_framing
 import db
 import calibrate
 
@@ -35,21 +35,21 @@ import calibrate
 def _summarize_forecast(open_meteo):
     if not open_meteo.get("available") or not open_meteo.get("hours"):
         return None, None, None, None
-    tomorrow = get_tomorrow_date()
+    target = get_target_date()
     morning = [
         h for h in open_meteo["hours"]
-        if h["date"] == tomorrow and RIDE_EARLIEST <= h["hour"] <= RIDE_LATEST
+        if h["date"] == target and RIDE_EARLIEST <= h["hour"] <= RIDE_LATEST
     ]
     if not morning:
         return None, None, None, None
     avg_prob = sum(h["precip_prob"] for h in morning) / len(morning)
     max_wind = max(h["wind_speed"] for h in morning)
     avg_hum = sum(h["humidity"] for h in morning) / len(morning)
-    today = today_str()
+    prev_evening = evening_before(target)
     pre_ride = [
         h for h in open_meteo["hours"]
-        if (h["date"] == today and h["hour"] >= 20)
-        or (h["date"] == tomorrow and h["hour"] < RIDE_EARLIEST)
+        if (h["date"] == prev_evening and h["hour"] >= 20)
+        or (h["date"] == target and h["hour"] < RIDE_EARLIEST)
     ]
     overnight = sum(h["precip"] for h in pre_ride) if pre_ride else 0
     return round(avg_prob, 1), round(max_wind, 1), round(avg_hum, 1), round(overnight, 2)
@@ -109,7 +109,11 @@ def run_cron():
                                wrf_analysis, time_window, road)
 
         avg_prob, max_wind, avg_hum, overnight = _summarize_forecast(open_meteo)
-        ride_date = get_tomorrow_date()
+        ride_date = get_target_date()
+        # The 20:00 run targets tomorrow (canonical). The 07:00 run targets
+        # today (framing "this morning") → logged as an observation only, so
+        # it can't clobber the night-before canonical prediction.
+        is_morning = get_framing() == "this_morning"
 
         # Shadow prediction: what the calibration model (as trained on prior
         # nights) would say for this same forecast. Recorded so the shadow
@@ -136,9 +140,11 @@ def run_cron():
             forecast_overnight_precip_mm=overnight,
             station_snapshots=_station_snapshots(pluvio),
             shadow=shadow,
+            morning=is_morning,
         )
         result["logged"] = {
             "ride_date": ride_date,
+            "morning_observation": is_morning,
             "decision": scored["decision"],
             "score": scored["score"],
             "shadow": shadow,
