@@ -17,9 +17,8 @@ import json
 import urllib.request
 import urllib.parse
 import urllib.error
-from datetime import datetime
-from config import RIDE_LATEST
-from timeutil import today_str, now_bogota
+from datetime import datetime, timedelta
+from timeutil import today_str, now_bogota, MORNING_CUTOFF_HOUR
 
 # New Vercel Blob HTTP API (private stores live here, not blob.vercel-storage.com).
 BLOB_API_BASE = "https://vercel.com/api/blob"
@@ -65,6 +64,18 @@ def _api_headers():
     }
 
 
+class BlobHTTPError(RuntimeError):
+    """A blob API call returned a non-2xx status. Carries the HTTP code so
+    callers can branch (404 = missing, 412 = precondition / write conflict)."""
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
+class _BlobConflict(RuntimeError):
+    """A conditional write was rejected because the blob changed under us."""
+
+
 def _do_request(req, label):
     """Surface API error bodies instead of urllib's bare 'HTTP 400'."""
     try:
@@ -75,7 +86,7 @@ def _do_request(req, label):
             body = e.read().decode("utf-8", errors="replace")
         except Exception:
             pass
-        raise RuntimeError(f"{label} → HTTP {e.code}: {body[:500]}") from e
+        raise BlobHTTPError(e.code, f"{label} → HTTP {e.code}: {body[:500]}") from e
 
 
 # ---------- Low-level blob HTTP helpers ----------
@@ -87,21 +98,22 @@ def _list_blobs(prefix):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _find_url(pathname=BLOB_PATHNAME):
-    """Return a CDN-cache-bypassing URL for `pathname`, or None.
+def _find_url_and_etag(pathname=BLOB_PATHNAME):
+    """Return (cache-bypassing URL, etag) for `pathname`, or (None, None).
 
     Vercel Blob serves the blob URL through a CDN that caches for up to
     60 seconds even with `cache-control: private`, which causes stale
     read-after-write. The list endpoint (vercel.com/api/blob) bypasses
     that CDN and always returns the latest etag, so we use the etag as
     a cache-buster query string. Since the etag changes on every write,
-    the cache key changes too and we get fresh content automatically.
+    the cache key changes too and we get fresh content automatically. The
+    etag is also our optimistic-concurrency token (see `_mutate`).
     """
     try:
         data = _list_blobs(pathname)
-    except urllib.error.HTTPError as e:
+    except BlobHTTPError as e:
         if e.code == 404:
-            return None
+            return None, None
         raise
     for b in data.get("blobs", []):
         if b.get("pathname") == pathname:
@@ -109,31 +121,63 @@ def _find_url(pathname=BLOB_PATHNAME):
             etag = (b.get("etag") or "").strip('"')
             if base and etag:
                 sep = "&" if "?" in base else "?"
-                return f"{base}{sep}v={etag}"
-            return base
-    return None
+                return f"{base}{sep}v={etag}", etag
+            return base, (etag or None)
+    return None, None
 
 
-def _read_blob(pathname, default):
-    """Read and JSON-parse `pathname` from the blob store. Returns `default`
-    if the blob doesn't exist or can't be parsed."""
-    url = _find_url(pathname)
+def _find_url(pathname=BLOB_PATHNAME):
+    return _find_url_and_etag(pathname)[0]
+
+
+def _current_etag(pathname=BLOB_PATHNAME):
+    return _find_url_and_etag(pathname)[1]
+
+
+def _get_blob(pathname, raise_on_corrupt=False):
+    """Fetch and JSON-parse `pathname`. Returns (data, etag).
+
+    (None, None) if the blob doesn't exist. If the blob EXISTS but its body
+    doesn't parse as JSON, returning an empty default would let the next write
+    overwrite real data with nothing (silent history wipe) — so when
+    `raise_on_corrupt` is set we raise instead; otherwise we return (None, etag)
+    for regenerable data (e.g. calibration) that can simply be rebuilt.
+    """
+    url, etag = _find_url_and_etag(pathname)
     if not url:
-        return default
+        return None, None
     # Private blob URLs require the bearer token to download.
     req = urllib.request.Request(url, headers={
         "user-agent": "PalmasRide/1.0",
         "authorization": f"Bearer {_token()}",
     })
     with _do_request(req, "blob get") as resp:
-        try:
-            return json.loads(resp.read().decode("utf-8"))
-        except json.JSONDecodeError:
-            return default
+        raw = resp.read().decode("utf-8")
+    try:
+        return json.loads(raw), etag
+    except json.JSONDecodeError as e:
+        if raise_on_corrupt:
+            raise RuntimeError(
+                f"{pathname} exists but did not parse as JSON ({len(raw)} bytes) "
+                f"— refusing to treat as empty (would wipe data on next write)"
+            ) from e
+        return None, etag
 
 
-def _write_blob(pathname, data):
-    """Overwrite `pathname` in the blob store with `data` (JSON-serialized)."""
+def _read_blob(pathname, default):
+    """Read and JSON-parse `pathname`. Returns `default` if the blob doesn't
+    exist (or, for regenerable data, can't be parsed)."""
+    data, _ = _get_blob(pathname)
+    return default if data is None else data
+
+
+def _write_blob(pathname, data, if_match=None):
+    """Overwrite `pathname` in the blob store with `data` (JSON-serialized).
+
+    When `if_match` (an etag) is given it is sent as a precondition; a store
+    that honors it rejects the write with HTTP 412 if the blob changed since,
+    which we surface as `_BlobConflict` so `_mutate` can retry.
+    """
     body = json.dumps(data, ensure_ascii=False).encode("utf-8")
     url = f"{BLOB_API_BASE}/?pathname={urllib.parse.quote(pathname)}"
     headers = {
@@ -146,19 +190,81 @@ def _write_blob(pathname, data):
         "content-type": "application/json",
         "content-length": str(len(body)),
     }
+    if if_match:
+        headers["if-match"] = if_match
     req = urllib.request.Request(url, data=body, method="PUT", headers=headers)
-    with _do_request(req, "blob put") as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with _do_request(req, "blob put") as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except BlobHTTPError as e:
+        if e.code == 412:
+            raise _BlobConflict(str(e)) from e
+        raise
+
+
+def _read_all_with_etag():
+    """Read the full prediction log + its etag. Returns ({'predictions': [...]},
+    etag-or-None). Raises if the blob exists but is corrupt or mis-shaped, so a
+    bad read can never be mistaken for an empty log (which a write would then
+    make permanent)."""
+    data, etag = _get_blob(BLOB_PATHNAME, raise_on_corrupt=True)
+    if data is None:
+        return {"predictions": []}, None  # blob doesn't exist yet — legit empty
+    if not isinstance(data, dict) or not isinstance(data.get("predictions"), list):
+        raise RuntimeError(
+            "predictions blob has an unexpected shape — refusing to treat as "
+            "empty (would wipe history on next write)"
+        )
+    return data, etag
 
 
 def _read_all():
     """Read the full prediction log from blob. Returns {'predictions': [...]}."""
-    return _read_blob(BLOB_PATHNAME, {"predictions": []})
+    return _read_all_with_etag()[0]
 
 
-def _write_all(data):
+def _write_all(data, if_match=None):
     """Overwrite predictions.json in the blob store with `data`."""
-    return _write_blob(BLOB_PATHNAME, data)
+    return _write_blob(BLOB_PATHNAME, data, if_match=if_match)
+
+
+# Sentinel a mutator returns to signal "no change — don't write".
+_UNCHANGED = object()
+
+
+def _mutate(apply_fn, retries=4):
+    """Read-modify-write predictions.json with optimistic concurrency.
+
+    `apply_fn(data)` may mutate the {'predictions': [...]} dict in place and
+    returns the caller's result, or `_UNCHANGED` to skip the write entirely.
+
+    Between our read and our write a concurrent serverless invocation may have
+    committed (e.g. /api/check logging while /api/override is saving). We hold
+    the etag from the read, re-check it just before writing, and also send it
+    as an If-Match precondition; either signal of a change makes us re-read and
+    re-apply rather than clobber the other write. This is what stops a routine
+    prediction log from silently erasing a hand-entered ground-truth override.
+    """
+    for _ in range(retries):
+        data, etag = _read_all_with_etag()
+        result = apply_fn(data)
+        if result is _UNCHANGED:
+            return None
+        if etag is not None and _current_etag() not in (None, etag):
+            continue  # blob moved during our modify window — retry on fresh data
+        try:
+            _write_all(data, if_match=etag)
+            return result
+        except _BlobConflict:
+            continue
+    # Retries exhausted under contention: re-apply on the freshest copy and
+    # write best-effort so the caller's change isn't dropped entirely.
+    data, _ = _read_all_with_etag()
+    result = apply_fn(data)
+    if result is _UNCHANGED:
+        return None
+    _write_all(data)
+    return result
 
 
 # ---------- Calibration state (calibration.json) ----------
@@ -219,84 +325,103 @@ def save_prediction(ride_date, score, decision, confidence, reasons,
     if not is_enabled():
         return
 
-    log = _read_all()
-    preds = log.get("predictions", [])
-    by_date = _by_date(preds)
-    existing = by_date.get(ride_date)
+    def apply(data):
+        by_date = _by_date(data.get("predictions", []))
+        existing = by_date.get(ride_date)
 
-    if existing and existing.get("actual") is not None:
-        return  # already finalized — don't overwrite
+        if existing and existing.get("actual") is not None:
+            return _UNCHANGED  # already finalized — don't overwrite
 
-    # Morning observation: don't disturb the canonical prediction.
-    if morning and existing is not None:
-        existing["morning"] = {
+        # Morning observation: don't disturb the canonical prediction.
+        if morning and existing is not None:
+            existing["morning"] = {
+                "score": score,
+                "decision": decision,
+                "confidence": confidence,
+                "shadow": shadow,
+                "at": _now_iso(),
+            }
+            existing["last_updated_at"] = _now_iso()
+            by_date[ride_date] = existing
+            data["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
+            return existing
+
+        forecast = {
+            "avg_precip_prob": forecast_avg_precip_prob,
+            "max_wind": forecast_max_wind,
+            "avg_humidity": forecast_avg_humidity,
+            "overnight_precip_mm": forecast_overnight_precip_mm,
+        }
+        if station_snapshots is not None:
+            forecast["station_snapshots"] = station_snapshots
+
+        entry = {
+            "ride_date": ride_date,
+            "predicted_at": existing["predicted_at"] if existing else _now_iso(),
+            "last_updated_at": _now_iso(),
             "score": score,
             "decision": decision,
             "confidence": confidence,
-            "shadow": shadow,
-            "at": _now_iso(),
+            "reasons": reasons,
+            "forecast": forecast,
+            "actual": existing.get("actual") if existing else None,
         }
-        existing["last_updated_at"] = _now_iso()
-        by_date[ride_date] = existing
-        log["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
-        _write_all(log)
-        return
+        # Preserve an existing shadow if the caller didn't supply a fresh one.
+        if shadow is not None:
+            entry["shadow"] = shadow
+        elif existing and existing.get("shadow") is not None:
+            entry["shadow"] = existing["shadow"]
+        # Preserve any existing morning observation across canonical refreshes.
+        if existing and existing.get("morning") is not None:
+            entry["morning"] = existing["morning"]
+        # Edge case: morning re-score with no prior canonical entry — mirror it
+        # into the morning slot too, so the observation is still captured.
+        if morning:
+            entry["morning"] = {
+                "score": score, "decision": decision,
+                "confidence": confidence, "shadow": shadow, "at": _now_iso(),
+            }
+        # Preserve a manual ground-truth override across canonical refreshes.
+        # Without this, a re-score of a not-yet-finalized overridden day would
+        # silently drop the override (and leave `correct` inconsistent with it).
+        if existing and existing.get("user_override") is not None:
+            entry["user_override"] = existing["user_override"]
+        # Re-derive correctness from the preserved actual + override.
+        entry["correct"] = _compute_correct(entry)
 
-    forecast = {
-        "avg_precip_prob": forecast_avg_precip_prob,
-        "max_wind": forecast_max_wind,
-        "avg_humidity": forecast_avg_humidity,
-        "overnight_precip_mm": forecast_overnight_precip_mm,
-    }
-    if station_snapshots is not None:
-        forecast["station_snapshots"] = station_snapshots
+        by_date[ride_date] = entry
+        data["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
+        return entry
 
-    entry = {
-        "ride_date": ride_date,
-        "predicted_at": existing["predicted_at"] if existing else _now_iso(),
-        "last_updated_at": _now_iso(),
-        "score": score,
-        "decision": decision,
-        "confidence": confidence,
-        "reasons": reasons,
-        "forecast": forecast,
-        "actual": existing.get("actual") if existing else None,
-        "correct": existing.get("correct") if existing else None,
-    }
-    # Preserve an existing shadow if the caller didn't supply a fresh one.
-    if shadow is not None:
-        entry["shadow"] = shadow
-    elif existing and existing.get("shadow") is not None:
-        entry["shadow"] = existing["shadow"]
-    # Preserve any existing morning observation across canonical refreshes.
-    if existing and existing.get("morning") is not None:
-        entry["morning"] = existing["morning"]
-    # Edge case: morning re-score with no prior canonical entry — mirror it
-    # into the morning slot too, so the observation is still captured.
-    if morning:
-        entry["morning"] = {
-            "score": score, "decision": decision,
-            "confidence": confidence, "shadow": shadow, "at": _now_iso(),
-        }
+    _mutate(apply)
 
-    by_date[ride_date] = entry
-    log["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
-    _write_all(log)
+
+# Open-Meteo's forecast endpoint reliably serves past observations roughly
+# this far back (matches fetch_openmeteo.fetch_actuals_for_date's past_days
+# cap). Pending dates older than this can't be observed any more, so we leave
+# them pending rather than label them from unrelated live data.
+MAX_BACKFILL_AGE_DAYS = 14
 
 
 def pending_actuals():
-    """Return ride_dates with a prediction but no actuals yet, where the
-    ride window has already finished (past day, or today after RIDE_LATEST)."""
+    """Return ride_dates with a prediction but no actuals yet that we can
+    still evaluate honestly.
+
+    Two guards keep the ground-truth labels trustworthy (see code review):
+      - Same-day isn't eligible until MORNING_CUTOFF_HOUR (08:00), so we never
+        freeze a verdict before the 05:00-07:30 window has actually finished
+        (#2). The ride window technically ends 07:30; 08:00 gives the hourly
+        observation time to publish.
+      - Dates older than MAX_BACKFILL_AGE_DAYS are skipped (#1): Open-Meteo can
+        no longer serve their observations, and labeling them from any live
+        signal would be fabricated. They stay pending rather than mislabeled.
+    """
     if not is_enabled():
         return []
     now = now_bogota()
     today = now.strftime("%Y-%m-%d")
-    # Allow same-day backfill from 07:00 Bogota onward. The ride window
-    # technically ends at 07:30, but by 07:00 we have observations for
-    # the 05:00 and 06:00 hours which cover most of the window. The
-    # 07:00 hour observation may not yet be published — fetch_actuals
-    # handles partial data fine (it averages over whatever hours exist).
-    window_closed_today = now.hour >= RIDE_LATEST
+    oldest = (now - timedelta(days=MAX_BACKFILL_AGE_DAYS)).strftime("%Y-%m-%d")
+    window_closed_today = now.hour >= MORNING_CUTOFF_HOUR
     log = _read_all()
     out = []
     for p in log.get("predictions", []):
@@ -304,7 +429,8 @@ def pending_actuals():
             continue
         rd = p["ride_date"]
         if rd < today:
-            out.append(rd)
+            if rd >= oldest:
+                out.append(rd)
         elif rd == today and window_closed_today:
             out.append(rd)
     return out
@@ -322,36 +448,38 @@ def save_actuals(ride_date, actual_precip_mm, actual_max_wind, actual_rained,
     """
     if not is_enabled():
         return
-    log = _read_all()
-    preds = log.get("predictions", [])
-    by_date = _by_date(preds)
-    entry = by_date.get(ride_date)
-    if not entry:
-        return
 
-    actual = {
-        "precip_mm": actual_precip_mm,
-        "max_wind": actual_max_wind,
-        "rained": actual_rained,
-        "updated_at": _now_iso(),
-    }
-    if open_meteo_precip_mm is not None:
-        actual["open_meteo_precip_mm"] = open_meteo_precip_mm
-    if siata_p24h_avg_mm is not None:
-        actual["siata_p24h_avg_mm"] = siata_p24h_avg_mm
-    if siata_p24h_max_mm is not None:
-        actual["siata_p24h_max_mm"] = siata_p24h_max_mm
-    if source is not None:
-        actual["source"] = source
-    if disagreement_mm is not None:
-        actual["disagreement_mm"] = disagreement_mm
-    if station_snapshots is not None:
-        actual["station_snapshots"] = station_snapshots
-    entry["actual"] = actual
-    entry["correct"] = _compute_correct(entry)
+    def apply(data):
+        by_date = _by_date(data.get("predictions", []))
+        entry = by_date.get(ride_date)
+        if not entry:
+            return _UNCHANGED
 
-    log["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
-    _write_all(log)
+        actual = {
+            "precip_mm": actual_precip_mm,
+            "max_wind": actual_max_wind,
+            "rained": actual_rained,
+            "updated_at": _now_iso(),
+        }
+        if open_meteo_precip_mm is not None:
+            actual["open_meteo_precip_mm"] = open_meteo_precip_mm
+        if siata_p24h_avg_mm is not None:
+            actual["siata_p24h_avg_mm"] = siata_p24h_avg_mm
+        if siata_p24h_max_mm is not None:
+            actual["siata_p24h_max_mm"] = siata_p24h_max_mm
+        if source is not None:
+            actual["source"] = source
+        if disagreement_mm is not None:
+            actual["disagreement_mm"] = disagreement_mm
+        if station_snapshots is not None:
+            actual["station_snapshots"] = station_snapshots
+        entry["actual"] = actual
+        entry["correct"] = _compute_correct(entry)
+
+        data["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
+        return entry
+
+    _mutate(apply)
 
 
 def _ground_truth_rained(entry):
@@ -394,45 +522,47 @@ def set_override(ride_date, rained, note=None):
     """
     if not is_enabled():
         return None
-    log = _read_all()
-    preds = log.get("predictions", [])
-    by_date = _by_date(preds)
-    entry = by_date.get(ride_date)
-    if not entry:
-        return None
 
-    override = {
-        "rained": bool(rained),
-        "set_at": _now_iso(),
-    }
-    if note:
-        override["note"] = note
-    entry["user_override"] = override
-    entry["correct"] = _compute_correct(entry)
+    def apply(data):
+        by_date = _by_date(data.get("predictions", []))
+        entry = by_date.get(ride_date)
+        if not entry:
+            return _UNCHANGED
 
-    log["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
-    _write_all(log)
-    return entry
+        override = {
+            "rained": bool(rained),
+            "set_at": _now_iso(),
+        }
+        if note:
+            override["note"] = note
+        entry["user_override"] = override
+        entry["correct"] = _compute_correct(entry)
+
+        data["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
+        return entry
+
+    return _mutate(apply)
 
 
 def clear_override(ride_date):
     """Remove the user override. `correct` falls back to the auto-detected actual."""
     if not is_enabled():
         return None
-    log = _read_all()
-    preds = log.get("predictions", [])
-    by_date = _by_date(preds)
-    entry = by_date.get(ride_date)
-    if not entry:
-        return None
 
-    if "user_override" in entry:
-        del entry["user_override"]
-    entry["correct"] = _compute_correct(entry)
+    def apply(data):
+        by_date = _by_date(data.get("predictions", []))
+        entry = by_date.get(ride_date)
+        if not entry:
+            return _UNCHANGED
 
-    log["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
-    _write_all(log)
-    return entry
+        if "user_override" in entry:
+            del entry["user_override"]
+        entry["correct"] = _compute_correct(entry)
+
+        data["predictions"] = sorted(by_date.values(), key=lambda p: p["ride_date"])
+        return entry
+
+    return _mutate(apply)
 
 
 def fetch_history(limit=60):

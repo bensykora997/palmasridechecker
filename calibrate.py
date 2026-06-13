@@ -424,15 +424,23 @@ def apply_calibration(cal_state, score, features):
         prob = _sigmoid(b + sum(w[j] * z[j] for j in range(len(w))))
         rain = prob >= RIDE_PROB_CUTOFF
         basis = "feature weights"
-    elif stage == "probability" and platt and score is not None:
+    elif platt and score is not None and stage in ("probability", "weights"):
+        # Stage 1+ always carries a Platt fit. Use it for the probability
+        # stage, and as the weights-stage fallback when *this* call has no
+        # feature vector (e.g. the forecast was missing a field) — otherwise
+        # we'd fall through to the threshold branch where `threshold` is None.
         prob = _platt_prob(platt, score)
         rain = prob >= RIDE_PROB_CUTOFF
         basis = "calibrated probability"
-    else:  # threshold stage (or weights-without-features fallback)
+    else:  # threshold stage
         # No probability here on purpose: a Platt fit on a handful of rainy
         # days isn't a trustworthy probability, so we show the decision and
         # the tuned cutoff only. A real probability appears from stage 1 on.
-        thr = cal.get("threshold", BASELINE_THRESHOLD)
+        # `threshold` is stored as None outside the threshold stage, so guard
+        # against it rather than comparing `score < None` (a TypeError).
+        thr = cal.get("threshold")
+        if thr is None:
+            thr = BASELINE_THRESHOLD
         rain = (score is not None and score < thr)
         basis = f"tuned threshold ({thr})"
 
