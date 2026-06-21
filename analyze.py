@@ -280,29 +280,43 @@ def analyze_road_conditions(open_meteo, station_analysis):
         result["factors"].append(f"SIATA stations recorded {siata_p24h:.1f} mm avg in last 24h")
     result["siata_p24h_avg_mm"] = siata_p24h
 
-    # Determine condition: take the worst-case of Open-Meteo overnight
-    # precip vs SIATA p24h average. If either source says it rained,
-    # treat the road accordingly.
+    # Determine condition.  Two independent signals, each with their own
+    # thresholds calibrated to their time window:
+    #
+    #   Open-Meteo overnight  (≈9 h window: 20:00 prev evening → 04:59 ride day)
+    #     → directly represents pre-ride rain; thresholds are tight.
+    #
+    #   SIATA p24h            (rolling 24 h window at station read time)
+    #     → covers rain from up to ~1 day ago; mountain roads dry in 3-6 h, so
+    #       only flag if p24h is large enough to imply sustained recent rain.
+    #       Threshold is 3× the overnight equivalent so old rain doesn't dominate.
     precip = result["recent_precip_mm"]
     is_raining = station_analysis.get("raining", False)
-    worst = max(precip, siata_p24h)
+
+    om_wet   = precip > 8       # heavy overnight rain in last ~9 h
+    om_damp  = precip > 2.5     # light overnight rain
+
+    # Only flag p24h if substantial — avoids yesterday morning's rain
+    # making today's roads look perpetually damp.
+    siata_wet  = siata_p24h > 15
+    siata_damp = siata_p24h > 7
 
     if is_raining:
         result["condition"] = "wet"
         result["detail"] = "Roads are wet — active rainfall"
-    elif worst > 5:
+    elif om_wet or siata_wet:
         result["condition"] = "wet"
-        if siata_p24h > precip:
+        if siata_wet and siata_p24h > precip:
             result["detail"] = f"Roads likely wet — SIATA recorded {siata_p24h:.1f} mm at Palmas in last 24h"
         else:
-            result["detail"] = "Roads likely wet — heavy recent rain"
-    elif worst > 1:
+            result["detail"] = "Roads likely wet — heavy overnight rain"
+    elif om_damp or siata_damp:
         result["condition"] = "damp"
-        if siata_p24h > precip:
+        if siata_damp and siata_p24h > precip:
             result["detail"] = f"Roads may be damp — SIATA recorded {siata_p24h:.1f} mm at Palmas in last 24h"
         else:
-            result["detail"] = "Roads may be damp — light recent rain"
-    elif worst > 0.2:
+            result["detail"] = "Roads may be damp — light overnight rain"
+    elif precip > 0.2 or siata_p24h > 2:
         result["condition"] = "mostly_dry"
         result["detail"] = "Roads mostly dry — trace precipitation"
     else:

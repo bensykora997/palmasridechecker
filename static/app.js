@@ -58,8 +58,8 @@ const T = {
     override_rained: "It rained",
     override_dry: "It was dry",
     override_clear: "Clear override",
-    token_prompt: "Enter the override token (CRON_SECRET value):",
-    token_missing: "No token set — override cancelled.",
+    token_prompt: "Enter override password:",
+    token_wrong: "Wrong password — override cancelled.",
     override_saved: "Override saved.",
     override_failed: "Couldn't save override:",
     overridden_label: "overridden",
@@ -148,8 +148,8 @@ const T = {
     override_rained: "Llovió",
     override_dry: "Estuvo seco",
     override_clear: "Quitar marca manual",
-    token_prompt: "Ingresá el token de override (valor de CRON_SECRET):",
-    token_missing: "Sin token — se canceló la marca.",
+    token_prompt: "Ingresá la contraseña de override:",
+    token_wrong: "Contraseña incorrecta — se canceló la marca.",
     override_saved: "Marca guardada.",
     override_failed: "No se pudo guardar:",
     overridden_label: "manuales",
@@ -966,9 +966,14 @@ async function postOverride(rideDate, rained) {
 }
 
 async function setOverride(rideDate, rained) {
+  const pw = prompt(t("token_prompt"));
+  if (pw === null) return;          // user hit Cancel
+  if (pw !== OVERRIDE_PASSWORD) {
+    alert(t("token_wrong"));
+    return;
+  }
   const entry = await postOverride(rideDate, rained);
   if (entry) {
-    // Refresh the history view to reflect the new verdict
     await loadHistory();
   }
 }
