@@ -580,10 +580,13 @@ function renderDetails(data) {
 
     drawRoute(__radarMap);
 
-    let overlay = null;
-    if (radarBounds) {
-      overlay = L.imageOverlay(radar.frames[0].image, radarBounds, { opacity: 0.65 }).addTo(__radarMap);
-    }
+    // Pre-create one overlay per frame; all images fetch in parallel so each
+    // frame is ready before the animation reaches it — no per-tick HTTP request.
+    const overlays = radarBounds
+      ? radar.frames.map((f, idx) =>
+          L.imageOverlay(f.image, radarBounds, { opacity: idx === 0 ? 0.65 : 0 }).addTo(__radarMap)
+        )
+      : [];
 
     // Zoom to the climb area (with a buffer) rather than full radar coverage
     if (allRoutePts.length) {
@@ -600,13 +603,16 @@ function renderDetails(data) {
 
     const timeLabel = document.getElementById("radarTime");
     let i = 0;
+    if (timeLabel) timeLabel.textContent = radar.frames[0].time;
     const tick = () => {
-      const f = radar.frames[i % radar.frames.length];
-      if (overlay) overlay.setUrl(f.image);
-      if (timeLabel) timeLabel.textContent = f.time;
-      i++;
+      const next = (i + 1) % radar.frames.length;
+      if (overlays.length) {
+        overlays[i].setOpacity(0);
+        overlays[next].setOpacity(0.65);
+      }
+      i = next;
+      if (timeLabel) timeLabel.textContent = radar.frames[i].time;
     };
-    tick();
     __radarTimer = setInterval(tick, 600);
   };
 
