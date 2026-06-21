@@ -1,1 +1,30 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#f0a030"/><g fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"><circle cx="20" cy="40" r="11"/><circle cx="44" cy="40" r="11"/><path d="M20 40 L30 22 L42 22 M30 22 L44 40 M20 40 L36 40"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#f0a030"/>
+  <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Wheels -->
+    <circle cx="14" cy="44" r="10" stroke-width="2.5"/>
+    <circle cx="50" cy="44" r="10" stroke-width="2.5"/>
+    <!-- Chain stay: rear axle → bottom bracket -->
+    <line x1="14" y1="44" x2="30" y2="44" stroke-width="2.5"/>
+    <!-- Seat stay: rear axle → seat tube top -->
+    <line x1="14" y1="44" x2="26" y2="24" stroke-width="2.5"/>
+    <!-- Seat tube: seat top → bottom bracket -->
+    <line x1="26" y1="24" x2="30" y2="44" stroke-width="2.5"/>
+    <!-- Top tube: seat top → head tube top -->
+    <line x1="26" y1="24" x2="46" y2="24" stroke-width="2.5"/>
+    <!-- Down tube: bottom bracket → head tube bottom -->
+    <line x1="30" y1="44" x2="47" y2="32" stroke-width="2.5"/>
+    <!-- Head tube -->
+    <line x1="46" y1="24" x2="47" y2="32" stroke-width="3"/>
+    <!-- Fork: head tube → front axle -->
+    <line x1="47" y1="32" x2="50" y2="44" stroke-width="2.5"/>
+    <!-- Seatpost -->
+    <line x1="26" y1="24" x2="23" y2="15" stroke-width="2"/>
+    <!-- Saddle -->
+    <line x1="18" y1="14" x2="29" y2="14" stroke-width="2.5"/>
+    <!-- Stem -->
+    <line x1="46" y1="24" x2="44" y2="14" stroke-width="2"/>
+    <!-- Drop handlebars: bar + right drop -->
+    <polyline points="40,14 49,14 49,21" stroke-width="2"/>
+  </g>
+</svg>

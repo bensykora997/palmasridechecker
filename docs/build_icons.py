@@ -1,97 +1,131 @@
 """Generate PWA icons for Palmas Ride Engine.
 
 Dev-only — run locally to (re)generate the committed PNGs in static/icons/.
-Pillow is NOT a runtime dependency (not in requirements.txt); it's only used
-here at build time.
+Pillow is NOT a runtime dependency (not in requirements.txt).
 
     python3 docs/build_icons.py
 
 Produces: icon-192.png, icon-512.png, icon-512-maskable.png,
-apple-touch-icon.png (180), plus favicon.svg.
+apple-touch-icon.png (180px).  favicon.svg is maintained separately.
 
-Design: accent-orange rounded field with a simple white bicycle mark — matches
-the app's --accent-orange (#f0a030) on --bg (#0f0f1a).
+Design: accent-orange rounded field with a white road-bike silhouette.
+All geometry is derived proportionally from the wheel-hub positions so the
+same drawing looks correct at every size.
 """
 
 import os
 from PIL import Image, ImageDraw
 
-ORANGE = (240, 160, 48, 255)   # --accent-orange
-DARK = (15, 15, 26, 255)       # --bg
-WHITE = (255, 255, 255, 255)
+ORANGE = (240, 160, 48, 255)
+WHITE  = (255, 255, 255, 255)
 
-OUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static", "icons")
+OUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "static", "icons")
 
 
-def _draw_bike(d, cx, cy, scale, color, width):
-    """Draw a minimal bicycle: two wheels + frame, centered on (cx, cy)."""
-    r = int(28 * scale)               # wheel radius
-    sep = int(46 * scale)             # half distance between hubs
-    lw = max(2, int(width * scale))
-    lh = cx - sep, cy                 # left hub
-    rh = cx + sep, cy                 # right hub
+def _pt(lh, wb, r, fx, fy):
+    """Pixel coord offset from rear hub by (fx*wb, fy*r)."""
+    return (round(lh[0] + fx * wb), round(lh[1] + fy * r))
+
+
+def _draw_bike(d, cx, cy, scale, color, lw_base):
+    """Draw a proper road-bicycle silhouette centred on (cx, cy).
+
+    All geometry is expressed as multiples of the wheel radius (r) and the
+    wheelbase (wb), derived from `scale`.  Proportions match a real road bike
+    (73-deg seat tube, 72-deg head tube, diamond frame).
+    """
+    lw = max(2, round(lw_base * scale))
+    hw = max(1, round(lw_base * scale * 0.75))
+
+    r   = round(28 * scale)
+    sep = round(45 * scale)
+    wb  = 2 * sep
+
+    lh = (cx - sep, cy)   # rear hub
+    rh = (cx + sep, cy)   # front hub
+
+    # Frame joints — offsets from rear hub as fractions of wheelbase / radius
+    bb   = _pt(lh, wb, r,  0.45,  0.00)   # bottom bracket
+    st_t = _pt(lh, wb, r,  0.32, -2.00)   # seat tube top
+    hd_t = _pt(lh, wb, r,  0.89, -2.00)   # head tube top
+    hd_b = _pt(lh, wb, r,  0.92, -1.20)   # head tube bottom
+
+    sp_t  = _pt(lh, wb, r,  0.25, -2.90)  # seatpost top
+    sdl_l = _pt(lh, wb, r,  0.11, -3.00)  # saddle left
+    sdl_r = _pt(lh, wb, r,  0.42, -3.00)  # saddle right
+
+    stm_t = _pt(lh, wb, r,  0.83, -3.00)  # stem top
+    bar_l = _pt(lh, wb, r,  0.72, -3.00)  # handlebar left
+    bar_r = _pt(lh, wb, r,  0.97, -3.00)  # handlebar right
+    drop  = _pt(lh, wb, r,  0.97, -2.30)  # right drop end
+
     # Wheels
-    for (hx, hy) in (lh, rh):
-        d.ellipse([hx - r, hy - r, hx + r, hy + r], outline=color, width=lw)
-    # Frame: simple triangle + seat/handlebar stems
-    top = (cx - int(6 * scale), cy - int(34 * scale))   # saddle top
-    bar = (cx + int(30 * scale), cy - int(34 * scale))  # handlebar top
-    mid = (cx, cy)                                       # bottom bracket
-    d.line([lh, top[0:2]], fill=color, width=lw)        # seat tube
-    d.line([top, mid], fill=color, width=lw)
-    d.line([mid, rh], fill=color, width=lw)
-    d.line([lh, mid], fill=color, width=lw)             # down/chain stay
-    d.line([mid, bar], fill=color, width=lw)            # down tube to bars
-    d.line([top, bar], fill=color, width=lw)            # top tube
-    d.line([bar[0], bar[1], rh[0], rh[1]], fill=color, width=lw)  # fork
+    d.ellipse([lh[0]-r, lh[1]-r, lh[0]+r, lh[1]+r], outline=color, width=lw)
+    d.ellipse([rh[0]-r, rh[1]-r, rh[0]+r, rh[1]+r], outline=color, width=lw)
+
+    # Diamond frame
+    d.line([lh, bb],     fill=color, width=lw)   # chain stay
+    d.line([lh, st_t],   fill=color, width=lw)   # seat stay
+    d.line([st_t, bb],   fill=color, width=lw)   # seat tube
+    d.line([st_t, hd_t], fill=color, width=lw)   # top tube
+    d.line([bb, hd_b],   fill=color, width=lw)   # down tube
+    d.line([hd_t, hd_b], fill=color, width=lw)   # head tube
+    d.line([hd_b, rh],   fill=color, width=lw)   # fork
+
+    # Seatpost + saddle
+    d.line([st_t, sp_t],   fill=color, width=hw)
+    d.line([sdl_l, sdl_r], fill=color, width=hw)
+
+    # Stem + drop handlebars
+    d.line([hd_t, stm_t],  fill=color, width=hw)
+    d.line([bar_l, bar_r], fill=color, width=hw)
+    d.line([bar_r, drop],  fill=color, width=hw)
 
 
-def _rounded(size, radius_frac, bg, draw_mark=True, pad_frac=0.0):
+def _make_icon(size, radius_frac, bg, scale_frac=1.0, pad_frac=0.0):
+    """Render one icon PNG.
+
+    cy is offset below centre so the bike is vertically balanced:
+      bike top    ~ cy - 3.0*r  (saddle/handlebar)
+      bike bottom ~ cy + 1.0*r  (wheel bottom)
+      => centre of visual mass at cy - r, so cy = size/2 + r centres it.
+    """
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    pad = int(size * pad_frac)
+    d   = ImageDraw.Draw(img)
+
+    pad    = int(size * pad_frac)
     radius = int(size * radius_frac)
     d.rounded_rectangle([pad, pad, size - 1 - pad, size - 1 - pad],
                         radius=radius, fill=bg)
-    if draw_mark:
-        scale = size / 160.0
-        _draw_bike(d, size // 2, int(size * 0.52), scale, WHITE, 6)
+
+    scale = (size / 160.0) * scale_frac
+    r_px  = round(28 * scale)
+    cx    = size // 2
+    cy    = size // 2 + r_px
+
+    _draw_bike(d, cx, cy, scale, WHITE, 6)
     return img
 
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
 
-    # Standard icons — rounded orange field, full bleed.
-    _rounded(192, 0.22, ORANGE).save(os.path.join(OUT_DIR, "icon-192.png"))
-    _rounded(512, 0.22, ORANGE).save(os.path.join(OUT_DIR, "icon-512.png"))
+    _make_icon(192, 0.22, ORANGE).save(os.path.join(OUT_DIR, "icon-192.png"))
+    _make_icon(512, 0.22, ORANGE).save(os.path.join(OUT_DIR, "icon-512.png"))
 
-    # Maskable — safe zone: keep the mark well inside, full-bleed orange square
-    # (no rounding; the launcher applies the mask).
-    maskable = _rounded(512, 0.0, ORANGE, draw_mark=False)
-    md = ImageDraw.Draw(maskable)
-    _draw_bike(md, 256, int(512 * 0.52), (512 / 160.0) * 0.7, WHITE, 6)
-    maskable.save(os.path.join(OUT_DIR, "icon-512-maskable.png"))
-
-    # Apple touch icon (180) — Apple adds its own rounding, so use a full square.
-    apple = _rounded(180, 0.0, ORANGE)
-    apple.save(os.path.join(OUT_DIR, "apple-touch-icon.png"))
-
-    # SVG favicon
-    svg = (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
-        '<rect width="64" height="64" rx="14" fill="#f0a030"/>'
-        '<g fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round">'
-        '<circle cx="20" cy="40" r="11"/><circle cx="44" cy="40" r="11"/>'
-        '<path d="M20 40 L30 22 L42 22 M30 22 L44 40 M20 40 L36 40"/>'
-        '</g></svg>'
+    # Maskable: full-bleed square, bike scaled to stay in the safe zone
+    _make_icon(512, 0.0, ORANGE, scale_frac=0.68).save(
+        os.path.join(OUT_DIR, "icon-512-maskable.png")
     )
-    with open(os.path.join(OUT_DIR, "favicon.svg"), "w") as f:
-        f.write(svg)
+
+    # Apple adds its own rounding, so use a full square
+    _make_icon(180, 0.0, ORANGE).save(os.path.join(OUT_DIR, "apple-touch-icon.png"))
 
     print("Wrote icons to", OUT_DIR)
-    for n in os.listdir(OUT_DIR):
-        print("  ", n)
+    for n in sorted(os.listdir(OUT_DIR)):
+        path = os.path.join(OUT_DIR, n)
+        print(f"  {n:30s}  {os.path.getsize(path):,} bytes")
 
 
 if __name__ == "__main__":
