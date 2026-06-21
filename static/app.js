@@ -435,6 +435,24 @@ function renderError(msg) {
 
 // ---------- More Details (radar + map + AQI) ----------
 
+// Returns age of latest radar frame in minutes, or null if unparseable.
+// SIATA frame timestamps are Bogota local time ("YYYY-MM-DD HH:MM"), UTC-5.
+function _radarAgeMinutes(frames) {
+  if (!frames || !frames.length) return null;
+  const raw = frames[frames.length - 1].time; // e.g. "2026-06-21 15:22"
+  const parsed = new Date(raw.trim().replace(" ", "T") + ":00-05:00");
+  if (isNaN(parsed)) return null;
+  return Math.round((Date.now() - parsed.getTime()) / 60000);
+}
+
+function _radarAgeLabel(minutes) {
+  if (minutes == null) return "";
+  if (minutes < 2) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const h = Math.floor(minutes / 60), m = minutes % 60;
+  return m > 0 ? `${h}h ${m}m ago` : `${h}h ago`;
+}
+
 let __radarTimer = null;
 let __miniMap = null;
 let __radarMap = null;
@@ -498,11 +516,21 @@ function renderDetails(data) {
     </div>
 
     <div class="card details-card">
-      <div class="reasons-title">${t("radar")}</div>
-      ${radar.available && radar.frames && radar.frames.length ? `
-        <div id="radar-map" class="radar-map"></div>
-        <div id="radarTime" class="radar-time-inline"></div>
-      ` : `<p style="opacity:0.6;font-size:0.9rem">${t("radar_unavailable")}</p>`}
+      ${(() => {
+        const radarAge = _radarAgeMinutes(radar.frames);
+        const stale = radarAge != null && radarAge > 90;
+        const ageLabel = _radarAgeLabel(radarAge);
+        return `
+          <div class="reasons-title radar-title-row">
+            ${t("radar")}
+            ${ageLabel ? `<span class="radar-age${stale ? " radar-age--stale" : ""}">${ageLabel}</span>` : ""}
+          </div>
+          ${radar.available && radar.frames && radar.frames.length ? `
+            <div id="radar-map" class="radar-map"></div>
+            <div id="radarTime" class="radar-time-inline"></div>
+          ` : `<p style="opacity:0.6;font-size:0.9rem">${t("radar_unavailable")}</p>`}
+        `;
+      })()}
     </div>
 
     <div class="card details-card">

@@ -497,6 +497,28 @@ body {
   border: 1px solid var(--border);
 }
 
+.radar-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.radar-age {
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: rgba(255,255,255,0.07);
+  border-radius: 99px;
+  padding: 0.1em 0.55em;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.radar-age--stale {
+  color: var(--accent-orange);
+  background: rgba(240,160,48,0.13);
+}
+
 .radar-time-inline {
   margin-top: 0.5rem;
   font-size: 0.78rem;
