@@ -798,7 +798,7 @@ function renderHistory(data) {
       : "";
 
     return `
-      <div class="history-row" data-history-row="${rd}" onclick="toggleHistoryRow('${rd}')">
+      <div class="history-row" data-history-row="${rd}">
         <div class="history-summary">
           <div class="history-date">
             <div class="history-verdict ${verdictCls}">${verdict}</div>
@@ -810,7 +810,7 @@ function renderHistory(data) {
           </div>
           <div class="history-score" style="color:${scoreColor(p.score)}">${p.score}</div>
         </div>
-        <div class="history-controls" onclick="event.stopPropagation()">
+        <div class="history-controls">
           <div class="override-label">${t("override_prompt")}</div>
           <div class="override-buttons">
             <button class="override-btn override-rained" onclick="setOverride('${rd}', true)">${t("override_rained")}</button>

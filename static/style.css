@@ -643,14 +643,6 @@ body {
 .history-row:hover { background: rgba(255,255,255,0.02); }
 
 .history-controls {
-  max-height: 0;
-  overflow: hidden;
-  transition: max-height 0.2s ease, margin-top 0.2s ease;
-  opacity: 0.95;
-}
-
-.history-row.expanded .history-controls {
-  max-height: 140px;
   margin-top: 0.6rem;
 }
 
