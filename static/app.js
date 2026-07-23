@@ -64,6 +64,7 @@ const T = {
     override_failed: "Couldn't save override:",
     overridden_label: "overridden",
     shadow_prefix: "Learned model would say",
+    heuristic_prefix: "Hand-tuned formula says",
     shadow_rain_suffix: "rain",
     calibration_title: "Self-Calibration",
     cal_stage: "Stage",
@@ -77,12 +78,14 @@ const T = {
     cal_days: "days",
     cal_rained: "rained",
     cal_hand_tuned: "Hand-tuned",
-    cal_calibrated: "Calibrated",
+    cal_calibrated: "Champion",
+    cal_challenger: "Challenger (+p24h)",
     cal_accuracy: "accuracy",
     cal_balanced: "balanced",
     cal_threshold_learned: "Learned cutoff",
     cal_weights_learned: "Learned weights",
     cal_shadow_note: "Shadow mode — the hand-tuned formula still drives the decision shown above. This panel shows what a model trained on your logged outcomes would do.",
+    cal_driving_note: "The learned champion model now drives the decision above. The hand-tuned formula is kept as a baseline (shown on the main screen). A challenger with the SIATA 24h-rain feature is learning behind it and will take over if it proves better.",
     vibes: [
       [90, "🚴‍♂️💨", "Kit up and clip in!", "yes"],
       [75, "🔥", "Send it, parcero!", "yes"],
@@ -154,6 +157,7 @@ const T = {
     override_failed: "No se pudo guardar:",
     overridden_label: "manuales",
     shadow_prefix: "El modelo aprendido diría",
+    heuristic_prefix: "La fórmula manual diría",
     shadow_rain_suffix: "lluvia",
     calibration_title: "Auto-calibración",
     cal_stage: "Etapa",
@@ -167,12 +171,14 @@ const T = {
     cal_days: "días",
     cal_rained: "con lluvia",
     cal_hand_tuned: "Manual",
-    cal_calibrated: "Calibrado",
+    cal_calibrated: "Campeón",
+    cal_challenger: "Retador (+p24h)",
     cal_accuracy: "precisión",
     cal_balanced: "balanceada",
     cal_threshold_learned: "Umbral aprendido",
     cal_weights_learned: "Pesos aprendidos",
     cal_shadow_note: "Modo sombra — la fórmula manual sigue decidiendo lo de arriba. Este panel muestra qué haría un modelo entrenado con tus resultados registrados.",
+    cal_driving_note: "El modelo campeón aprendido ahora decide lo de arriba. La fórmula manual se conserva como referencia (se muestra en la pantalla principal). Un retador con la lluvia de 24h de SIATA está aprendiendo detrás y tomará el control si demuestra ser mejor.",
     vibes: [
       [90, "🚴‍♂️💨", "¡Listos, a clavar!", "yes"],
       [75, "🔥", "¡Dale parce, mándale!", "yes"],
@@ -290,14 +296,22 @@ function render(data) {
       ? t("subtitle_today") : t("subtitle_tomorrow");
   }
 
-  // Shadow line — what the self-calibrating model would say (display only)
+  // Secondary model line. When the learned model drives the decision
+  // (decided_by === "model"), the headline above IS the model — so show the
+  // hand-tuned formula here as the comparison/baseline. Otherwise (fallback),
+  // keep showing what the learned model would say.
   let shadowLine = "";
-  const sh = data.calibration_shadow;
-  if (sh && sh.shadow_decision) {
-    const pct = (sh.shadow_prob_rain != null)
-      ? ` (${Math.round(sh.shadow_prob_rain * 100)}% ${t("shadow_rain_suffix")})`
-      : "";
-    shadowLine = `<div class="shadow-line">${t("shadow_prefix")}: <b>${sh.shadow_decision}</b>${pct}</div>`;
+  if (data.decided_by === "model" && data.heuristic && data.heuristic.decision) {
+    const h = data.heuristic;
+    shadowLine = `<div class="shadow-line">${t("heuristic_prefix")}: <b>${h.decision}</b> (${h.score}/100)</div>`;
+  } else {
+    const sh = data.calibration_shadow;
+    if (sh && sh.shadow_decision) {
+      const pct = (sh.shadow_prob_rain != null)
+        ? ` (${Math.round(sh.shadow_prob_rain * 100)}% ${t("shadow_rain_suffix")})`
+        : "";
+      shadowLine = `<div class="shadow-line">${t("shadow_prefix")}: <b>${sh.shadow_decision}</b>${pct}</div>`;
+    }
   }
 
   main.innerHTML = `
@@ -706,6 +720,14 @@ function calibrationPanel(cal) {
     learned = `<div class="cal-weights-label">${t("cal_weights_learned")}</div><div class="cal-weights">${items}</div>`;
   }
 
+  // Which model is the champion (drives the decision). "★" marks it.
+  const ch = cal.challenger;
+  const star = who => cal.champion === who ? " ★" : "";
+  const challengerRow = ch ? `
+      <div class="cal-acc-name">${t("cal_challenger")}${star("challenger")}</div>
+      <div class="cal-acc-val cal-hi">${_pct(ch.accuracy)}</div>
+      <div class="cal-acc-val cal-hi">${_pct(ch.balanced_accuracy)}</div>` : "";
+
   // Accuracy comparison — show both raw and balanced
   const accTable = `
     <div class="cal-acc-grid">
@@ -717,11 +739,16 @@ function calibrationPanel(cal) {
       <div class="cal-acc-val">${_pct(base.accuracy)}</div>
       <div class="cal-acc-val">${_pct(base.balanced_accuracy)}</div>
 
-      <div class="cal-acc-name">${t("cal_calibrated")}</div>
+      <div class="cal-acc-name">${t("cal_calibrated")}${star("calibrated")}</div>
       <div class="cal-acc-val cal-hi">${_pct(c.accuracy)}</div>
       <div class="cal-acc-val cal-hi">${_pct(c.balanced_accuracy)}</div>
+      ${challengerRow}
     </div>
   `;
+
+  // Note reflects whether the learned model is now driving the decision.
+  const note = (cal.champion && cal.champion !== "hand_tuned")
+    ? t("cal_driving_note") : t("cal_shadow_note");
 
   return `
     <div class="card cal-card">
@@ -731,7 +758,7 @@ function calibrationPanel(cal) {
       ${unlockLine}
       ${accTable}
       ${learned}
-      <div class="cal-note">${t("cal_shadow_note")}</div>
+      <div class="cal-note">${note}</div>
     </div>
   `;
 }
