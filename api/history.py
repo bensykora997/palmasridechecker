@@ -30,6 +30,11 @@ def _maybe_retrain_calibration():
             stale = age > CALIBRATION_STALE_SECONDS
         except Exception:
             stale = True
+    # A stored state from older code (schema/behavior change) is always stale,
+    # so a version bump takes effect on the next read rather than waiting for
+    # the 24h timer or the nightly cron.
+    if (cal or {}).get("model_version") != calibrate.MODEL_VERSION:
+        stale = True
     if stale:
         entries = db._read_all().get("predictions", [])
         cal = calibrate.train_calibration(

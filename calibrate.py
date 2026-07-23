@@ -47,6 +47,11 @@ MIN_FEAT_CHALLENGER = 20
 MIN_RAINED_CHALLENGER = 4
 PROMOTION_MIN_RAINED = MIN_RAINED_WEIGHTS   # >= 8 rain events before a takeover
 
+# Bumped whenever the calibration schema/behavior changes, so a stored state
+# from older code is treated as stale and retrained on the next read (see
+# api/history._maybe_retrain_calibration). v2: champion/challenger + p24h.
+MODEL_VERSION = 2
+
 FEATURE_KEYS = ["avg_precip_prob", "max_wind", "avg_humidity", "overnight_precip_mm"]
 # Challenger config: the champion features plus a corridor SIATA p24h aggregate
 # (trailing 24h rain observed the evening before). Complementary to the
@@ -354,7 +359,7 @@ def _gathering(reason, scored, featured):
                         "at_evaluated": MIN_EVAL_THRESHOLD,
                         "needs_each_class": MIN_CLASS_THRESHOLD},
         "champion": "hand_tuned",
-        "model_version": 1,
+        "model_version": MODEL_VERSION,
     }
 
 
@@ -462,7 +467,7 @@ def train_calibration(entries, trained_at=None):
         "challenger": challenger,
         "next_unlock": next_unlock,
         "champion": champion,
-        "model_version": 1,
+        "model_version": MODEL_VERSION,
     }
     if trained_at:
         state["trained_at"] = trained_at
