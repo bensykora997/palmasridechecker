@@ -478,6 +478,14 @@ def train_calibration(entries, trained_at=None):
 # Inference — what would the shadow model say for the current prediction?
 # ====================================================================
 
+def confidence_from_prob(prob):
+    """Map P(rain) distance from the 0.5 cutoff to a confidence bucket."""
+    if prob is None:
+        return "low"
+    d = abs(prob - 0.5)
+    return "high" if d >= 0.3 else ("medium" if d >= 0.12 else "low")
+
+
 def champion_model(cal_state):
     """Return (model_dict, model_name) for the champion the decision should use.
     Falls back to the base calibrated model if the pointer is missing/unknown.
@@ -506,49 +514,91 @@ def apply_calibration(cal_state, score, feature_map=None):
 
     cal, model_name = champion_model(cal_state)
     stage = cal_state.get("stage")
-    platt = cal.get("platt")
-
-    # Build the champion's feature vector from the map, in its own feature order.
-    features = None
-    if feature_map is not None and cal.get("feature_keys"):
-        vals = [feature_map.get(k) for k in cal["feature_keys"]]
-        if all(isinstance(v, (int, float)) for v in vals):
-            features = [float(v) for v in vals]
-
-    prob = None
-    if stage == "weights" and cal.get("weights") and features is not None:
-        means = cal["feature_means"]
-        stds = cal["feature_stds"]
-        w = cal["weights"]["coef"]
-        b = cal["weights"]["bias"]
-        z = _apply_standardize(features, means, stds)
-        prob = _sigmoid(b + sum(w[j] * z[j] for j in range(len(w))))
-        rain = prob >= RIDE_PROB_CUTOFF
-        basis = "feature weights"
-    elif platt and score is not None and stage in ("probability", "weights"):
-        # Stage 1+ always carries a Platt fit. Use it for the probability
-        # stage, and as the weights-stage fallback when *this* call has no
-        # feature vector (e.g. the forecast was missing a field) — otherwise
-        # we'd fall through to the threshold branch where `threshold` is None.
-        prob = _platt_prob(platt, score)
-        rain = prob >= RIDE_PROB_CUTOFF
-        basis = "calibrated probability"
-    else:  # threshold stage
-        # No probability here on purpose: a Platt fit on a handful of rainy
-        # days isn't a trustworthy probability, so we show the decision and
-        # the tuned cutoff only. A real probability appears from stage 1 on.
-        # `threshold` is stored as None outside the threshold stage, so guard
-        # against it rather than comparing `score < None` (a TypeError).
-        thr = cal.get("threshold")
-        if thr is None:
-            thr = BASELINE_THRESHOLD
-        rain = (score is not None and score < thr)
-        basis = f"tuned threshold ({thr})"
-
+    rain, prob, basis, drivers = _predict_model(cal, stage, score, feature_map)
     return {
         "shadow_decision": "NO" if rain else "YES",
         "shadow_prob_rain": round(prob, 4) if prob is not None else None,
         "shadow_basis": basis,
         "stage": stage,
         "model": model_name,
+        "drivers": drivers,
     }
+
+
+def _features_for(model, feature_map):
+    """Vector for `model` from a {key: value} map, in the model's own feature
+    order; None if the map is missing any of the model's features."""
+    keys = (model or {}).get("feature_keys")
+    if feature_map is None or not keys:
+        return None
+    vals = [feature_map.get(k) for k in keys]
+    if all(isinstance(v, (int, float)) for v in vals):
+        return [float(v) for v in vals]
+    return None
+
+
+def _predict_model(model, stage, score, feature_map):
+    """Core inference for one model dict. Returns (rain, prob, basis, drivers)."""
+    platt = (model or {}).get("platt")
+    features = _features_for(model, feature_map)
+
+    if stage == "weights" and model.get("weights") and features is not None:
+        means, stds = model["feature_means"], model["feature_stds"]
+        w, b = model["weights"]["coef"], model["weights"]["bias"]
+        z = _apply_standardize(features, means, stds)
+        prob = _sigmoid(b + sum(w[j] * z[j] for j in range(len(w))))
+        rain = prob >= RIDE_PROB_CUTOFF
+        # Top feature contributions (w_j * z_j) pushing the current verdict, so
+        # the UI can explain *why* — positive logit = toward rain.
+        keys = model.get("feature_keys") or []
+        signed = [(keys[j], w[j] * z[j]) for j in range(len(w)) if j < len(keys)]
+        signed.sort(key=lambda kv: kv[1], reverse=rain)
+        drivers = [k for k, v in signed if (v > 0 if rain else v < 0)][:2]
+        return rain, prob, "feature weights", drivers
+    if platt and score is not None and stage in ("probability", "weights"):
+        # Stage 1+ always carries a Platt fit. Used for the probability stage,
+        # and as the weights-stage fallback when this call has no feature vector.
+        prob = _platt_prob(platt, score)
+        return prob >= RIDE_PROB_CUTOFF, prob, "calibrated probability", []
+    # threshold stage — decision only, no trustworthy probability yet.
+    thr = (model or {}).get("threshold")
+    if thr is None:
+        thr = BASELINE_THRESHOLD
+    rain = (score is not None and score < thr)
+    return rain, None, f"tuned threshold ({thr})", []
+
+
+def entry_feature_map(entry):
+    """Build a {feature_key: value} map for a stored prediction entry, covering
+    every possible feature (champion + challenger) so either model can score it."""
+    fc = entry.get("forecast") or {}
+    out = {}
+    for k in CHALLENGER_FEATURE_KEYS:
+        out[k] = _corridor_p24h(entry) if k == "p24h" else fc.get(k)
+    return out
+
+
+def evaluate_models(cal_state, entry):
+    """Retrospective per-day verdicts for BOTH learned models on a stored entry,
+    for the history head-to-head. Returns
+    {calibrated: {decision, prob} | None, challenger: {decision, prob} | None}
+    or None when there's no usable model yet.
+
+    Uses the currently-trained models applied to each past day — so for days in
+    the training set these are in-sample (optimistic) estimates; the honest
+    generalization numbers are the LOO figures in the calibration panel."""
+    if not cal_state or cal_state.get("stage") == "gathering":
+        return None
+    stage = cal_state.get("stage")
+    score = entry_score(entry)
+    fmap = entry_feature_map(entry)
+    out = {}
+    for name in ("calibrated", "challenger"):
+        model = cal_state.get(name)
+        if not model:
+            out[name] = None
+            continue
+        rain, prob, _basis, _drivers = _predict_model(model, stage, score, fmap)
+        out[name] = {"decision": "NO" if rain else "YES",
+                     "prob": round(prob, 4) if prob is not None else None}
+    return out

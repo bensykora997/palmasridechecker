@@ -205,11 +205,15 @@ def build_result():
             # always the hand-tuned score (the calibration baseline + platt/
             # threshold stages grade it); the model-derived display score is not.
             is_morning = get_framing() == "this_morning"
+            # Log the decision/confidence actually shown (the champion model, or
+            # the heuristic when it's the fallback) so the history track record
+            # reflects reality. The hand-tuned SCORE is still logged as the
+            # calibration substrate (baseline + platt/threshold stages).
             db.save_prediction(
                 ride_date=get_target_date(),
                 score=result["score"],
-                decision=result["decision"],
-                confidence=result["confidence"],
+                decision=decision,
+                confidence=confidence,
                 reasons=result["reasons"],
                 forecast_avg_precip_prob=avg_prob,
                 forecast_max_wind=max_wind,

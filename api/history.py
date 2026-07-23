@@ -52,7 +52,15 @@ class handler(BaseHTTPRequestHandler):
             data = db.fetch_history(limit=60)
             if db.is_enabled():
                 try:
-                    data["calibration"] = _maybe_retrain_calibration()
+                    cal = _maybe_retrain_calibration()
+                    data["calibration"] = cal
+                    # Per-day champion vs challenger verdicts for the history
+                    # head-to-head (retrospective; see calibrate.evaluate_models).
+                    for p in data.get("predictions", []):
+                        try:
+                            p["model_eval"] = calibrate.evaluate_models(cal, p)
+                        except Exception:
+                            p["model_eval"] = None
                 except Exception as e:
                     data["calibration"] = {"error": str(e)}
         except Exception as e:

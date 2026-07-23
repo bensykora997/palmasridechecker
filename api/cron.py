@@ -107,11 +107,21 @@ def run_cron():
         except Exception as e:
             result["errors"].append(f"shadow: {e}")
 
+        # Log the decision actually shown: the champion model when available,
+        # else the hand-tuned heuristic. Score stays the hand-tuned calibration
+        # substrate (see check.py).
+        if shadow and shadow.get("shadow_decision"):
+            log_decision = shadow["shadow_decision"]
+            log_confidence = calibrate.confidence_from_prob(shadow.get("shadow_prob_rain"))
+        else:
+            log_decision = scored["decision"]
+            log_confidence = scored["confidence"]
+
         db.save_prediction(
             ride_date=ride_date,
             score=scored["score"],
-            decision=scored["decision"],
-            confidence=scored["confidence"],
+            decision=log_decision,
+            confidence=log_confidence,
             reasons=scored["reasons"],
             forecast_avg_precip_prob=avg_prob,
             forecast_max_wind=max_wind,
@@ -124,7 +134,7 @@ def run_cron():
         result["logged"] = {
             "ride_date": ride_date,
             "morning_observation": is_morning,
-            "decision": scored["decision"],
+            "decision": log_decision,
             "score": scored["score"],
             "shadow": shadow,
         }

@@ -64,8 +64,18 @@ const T = {
     override_failed: "Couldn't save override:",
     overridden_label: "overridden",
     shadow_prefix: "Learned model would say",
-    heuristic_prefix: "Hand-tuned formula says",
+    model_prob_prefix: "Learned model",
     shadow_rain_suffix: "rain",
+    reason_factors: "key factors",
+    hist_champion: "Champion",
+    hist_challenger: "Challenger",
+    feat_labels: {
+      avg_precip_prob: "rain forecast",
+      max_wind: "wind",
+      avg_humidity: "humidity",
+      overnight_precip_mm: "overnight rain",
+      p24h: "recent 24h rain",
+    },
     calibration_title: "Self-Calibration",
     cal_stage: "Stage",
     cal_gathering: "Gathering data",
@@ -157,8 +167,18 @@ const T = {
     override_failed: "No se pudo guardar:",
     overridden_label: "manuales",
     shadow_prefix: "El modelo aprendido diría",
-    heuristic_prefix: "La fórmula manual diría",
+    model_prob_prefix: "Modelo aprendido",
     shadow_rain_suffix: "lluvia",
+    reason_factors: "factores clave",
+    hist_champion: "Campeón",
+    hist_challenger: "Retador",
+    feat_labels: {
+      avg_precip_prob: "pronóstico de lluvia",
+      max_wind: "viento",
+      avg_humidity: "humedad",
+      overnight_precip_mm: "lluvia nocturna",
+      p24h: "lluvia reciente (24h)",
+    },
     calibration_title: "Auto-calibración",
     cal_stage: "Etapa",
     cal_gathering: "Recolectando datos",
@@ -296,22 +316,29 @@ function render(data) {
       ? t("subtitle_today") : t("subtitle_tomorrow");
   }
 
-  // Secondary model line. When the learned model drives the decision
-  // (decided_by === "model"), the headline above IS the model — so show the
-  // hand-tuned formula here as the comparison/baseline. Otherwise (fallback),
-  // keep showing what the learned model would say.
+  // Model context line — the learned model's rain probability behind the
+  // verdict above (the model drives the decision now; the hand-tuned formula is
+  // internal plumbing only and no longer shown).
+  const sh = data.calibration_shadow;
   let shadowLine = "";
-  if (data.decided_by === "model" && data.heuristic && data.heuristic.decision) {
-    const h = data.heuristic;
-    shadowLine = `<div class="shadow-line">${t("heuristic_prefix")}: <b>${h.decision}</b> (${h.score}/100)</div>`;
-  } else {
-    const sh = data.calibration_shadow;
-    if (sh && sh.shadow_decision) {
-      const pct = (sh.shadow_prob_rain != null)
-        ? ` (${Math.round(sh.shadow_prob_rain * 100)}% ${t("shadow_rain_suffix")})`
-        : "";
-      shadowLine = `<div class="shadow-line">${t("shadow_prefix")}: <b>${sh.shadow_decision}</b>${pct}</div>`;
-    }
+  if (sh && sh.shadow_prob_rain != null) {
+    const pct = Math.round(sh.shadow_prob_rain * 100);
+    shadowLine = `<div class="shadow-line">${t("model_prob_prefix")}: <b>${pct}% ${t("shadow_rain_suffix")}</b></div>`;
+  }
+
+  // Hybrid reasons: a one-line model summary prepended above the weather facts,
+  // so the explanation always matches the model's verdict.
+  let modelReason = "";
+  if (data.decided_by === "model" && sh && sh.shadow_prob_rain != null) {
+    const pct = Math.round(sh.shadow_prob_rain * 100);
+    const labels = t("feat_labels") || {};
+    const drv = (sh.drivers || []).map(k => labels[k] || k);
+    const factors = drv.length ? ` · ${t("reason_factors")}: ${drv.join(", ")}` : "";
+    modelReason = `
+      <div class="reason-item reason-item--model">
+        <div class="reason-dot"></div>
+        <div><b>${t("model_prob_prefix")}: ${pct}% ${t("shadow_rain_suffix")}</b>${factors}</div>
+      </div>`;
   }
 
   main.innerHTML = `
@@ -372,6 +399,7 @@ function render(data) {
 
     <div class="reasons-card">
       <div class="reasons-title">${t("analysis")}</div>
+      ${modelReason}
       ${data.reasons.map(r => `
         <div class="reason-item">
           <div class="reason-dot"></div>
@@ -728,16 +756,13 @@ function calibrationPanel(cal) {
       <div class="cal-acc-val cal-hi">${_pct(ch.accuracy)}</div>
       <div class="cal-acc-val cal-hi">${_pct(ch.balanced_accuracy)}</div>` : "";
 
-  // Accuracy comparison — show both raw and balanced
+  // Accuracy comparison — champion vs challenger (the hand-tuned baseline is
+  // internal plumbing now and no longer shown).
   const accTable = `
     <div class="cal-acc-grid">
       <div class="cal-acc-head"></div>
       <div class="cal-acc-head">${t("cal_accuracy")}</div>
       <div class="cal-acc-head">${t("cal_balanced")}</div>
-
-      <div class="cal-acc-name">${t("cal_hand_tuned")}</div>
-      <div class="cal-acc-val">${_pct(base.accuracy)}</div>
-      <div class="cal-acc-val">${_pct(base.balanced_accuracy)}</div>
 
       <div class="cal-acc-name">${t("cal_calibrated")}${star("calibrated")}</div>
       <div class="cal-acc-val cal-hi">${_pct(c.accuracy)}</div>
@@ -853,6 +878,24 @@ function renderHistory(data) {
       ? `<button class="override-btn override-clear" onclick="event.stopPropagation(); clearOverride('${rd}')">${t("override_clear")}</button>`
       : "";
 
+    // Champion vs challenger head-to-head for this day (retrospective).
+    let modelEvalLine = "";
+    const me = p.model_eval;
+    if (me && (me.calibrated || me.challenger)) {
+      const gt = (ov && ov.rained != null) ? ov.rained
+               : (p.actual && p.actual.rained != null) ? p.actual.rained : null;
+      const cell = (m, label) => {
+        if (!m || !m.decision) return "";
+        const predRain = m.decision === "NO";
+        const mark = gt == null ? "" : (predRain === gt ? " ✓" : " ✗");
+        const cls = gt == null ? "" : (predRain === gt ? "me-ok" : "me-bad");
+        const pct = m.prob != null ? ` ${Math.round(m.prob * 100)}%` : "";
+        return `<span class="me-cell ${cls}">${label} ${m.decision}${pct}${mark}</span>`;
+      };
+      const cells = cell(me.calibrated, t("hist_champion")) + cell(me.challenger, t("hist_challenger"));
+      if (cells) modelEvalLine = `<div class="history-modeleval">${cells}</div>`;
+    }
+
     return `
       <div class="history-row" data-history-row="${rd}">
         <div class="history-summary">
@@ -862,6 +905,7 @@ function renderHistory(data) {
               <div>${date}</div>
               <div class="history-sub">${t("predicted")}: ${p.decision} · ${t("actual")}: ${actualBit} ${overrideBadge}${sourceBadge}</div>
               ${overrideLine}
+              ${modelEvalLine}
             </div>
           </div>
           <div class="history-score" style="color:${scoreColor(p.score)}">${p.score}</div>

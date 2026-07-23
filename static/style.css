@@ -278,6 +278,29 @@ body {
   margin-top: 0.5em;
 }
 
+/* Learned-model summary line (hybrid reasons) — highlighted above the facts */
+.reason-item--model {
+  background: rgba(240, 160, 48, 0.08);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.3rem;
+  border-bottom: none;
+}
+.reason-item--model .reason-dot { background: var(--accent-orange); }
+
+/* History per-day champion vs challenger head-to-head */
+.history-modeleval {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+  margin-top: 0.25rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.history-modeleval .me-cell { white-space: nowrap; }
+.history-modeleval .me-ok { color: var(--accent-green); }
+.history-modeleval .me-bad { color: var(--accent-red); }
+
 /* Data sources */
 .sources-card {
   background: var(--surface);
