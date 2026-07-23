@@ -39,8 +39,24 @@ MIN_EVAL_PROBABILITY = 20
 MIN_RAINED_PROBABILITY = 4
 MIN_FEAT_WEIGHTS = 40
 MIN_RAINED_WEIGHTS = 8
+# The challenger (p24h) trains on the subset of days that carry station
+# snapshots, which lags the main log — so it gets a lower floor to START
+# training/displaying, but a STRICTER promotion gate (see PROMOTION_MIN_RAINED):
+# it may not take over the decision until it has an adequate rain sample.
+MIN_FEAT_CHALLENGER = 20
+MIN_RAINED_CHALLENGER = 4
+PROMOTION_MIN_RAINED = MIN_RAINED_WEIGHTS   # >= 8 rain events before a takeover
 
 FEATURE_KEYS = ["avg_precip_prob", "max_wind", "avg_humidity", "overnight_precip_mm"]
+# Challenger config: the champion features plus a corridor SIATA p24h aggregate
+# (trailing 24h rain observed the evening before). Complementary to the
+# forecast-only features — it fires on days the day-ahead forecast is blind to
+# (see analysis: 2026-06-19/-20 rained with forecast prob <=13% but p24h ~10mm).
+CHALLENGER_FEATURE_KEYS = FEATURE_KEYS + ["p24h"]
+
+# How much better (balanced accuracy) the challenger must be to take over as
+# champion. Kept small: pre-public, low risk, and we want the better model in.
+PROMOTION_MARGIN = 0.02
 
 STAGE_ORDER = ["gathering", "threshold", "probability", "weights"]
 
@@ -69,13 +85,22 @@ def entry_score(entry):
     return float(s) if isinstance(s, (int, float)) else None
 
 
-def entry_features(entry):
-    """Return [avg_precip_prob, max_wind, avg_humidity, overnight_precip_mm]
-    or None if any are missing."""
+def _corridor_p24h(entry):
+    """Max trailing-24h rain across the corridor stations captured at prediction
+    time, from the logged forecast.station_snapshots. None if unavailable."""
+    fc = entry.get("forecast") or {}
+    snaps = fc.get("station_snapshots") or []
+    vals = [s.get("p24h") for s in snaps if isinstance(s.get("p24h"), (int, float))]
+    return max(vals) if vals else None
+
+
+def entry_features(entry, keys=FEATURE_KEYS):
+    """Return the feature vector for `keys` (default = champion features), or
+    None if any feature is missing. Supports the derived "p24h" key."""
     fc = entry.get("forecast") or {}
     vals = []
-    for k in FEATURE_KEYS:
-        v = fc.get(k)
+    for k in keys:
+        v = _corridor_p24h(entry) if k == "p24h" else fc.get(k)
         if v is None or not isinstance(v, (int, float)):
             return None
         vals.append(float(v))
@@ -92,11 +117,11 @@ def _scored_dataset(entries):
     return out
 
 
-def _featured_dataset(entries):
-    """[(features, label)] over entries that have all 4 features + a label."""
+def _featured_dataset(entries, keys=FEATURE_KEYS):
+    """[(features, label)] over entries that have all of `keys` + a label."""
     out = []
     for e in entries:
-        x, y = entry_features(e), entry_label(e)
+        x, y = entry_features(e, keys), entry_label(e)
         if x is not None and y is not None:
             out.append((x, y))
     return out
@@ -284,6 +309,37 @@ def _baseline_accuracy(scored):
     return _accuracies(preds, labels)
 
 
+def _weights_model(featured_k, feature_keys, platt_full):
+    """Train a weights-stage model on featured_k=[(features, label)] for the
+    given feature_keys. Returns a self-contained model dict (same shape as the
+    `calibrated` block) with LOO metrics, or None if featured_k is empty.
+
+    L2 is chosen by LOO balanced accuracy over a small grid (same as before)."""
+    if not featured_k:
+        return None
+    X = [x for x, _ in featured_k]
+    y = [yy for _, yy in featured_k]
+    Z, means, stds = _standardize_cols(X)
+    best = None
+    for l2 in (0.1, 0.5, 1.0, 2.0, 5.0):
+        raw, bal = _loo_weights(featured_k, l2)
+        key = (bal if bal is not None else -1, raw if raw is not None else -1)
+        if best is None or key > best[0]:
+            best = (key, l2, raw, bal)
+    _, l2_best, cal_raw, cal_bal = best
+    w, b = _fit_logistic(Z, y, l2=l2_best)
+    return {
+        "platt": platt_full,
+        "threshold": None,
+        "weights": {"coef": w, "bias": b, "l2": l2_best},
+        "feature_means": means,
+        "feature_stds": stds,
+        "feature_keys": list(feature_keys),
+        "accuracy": cal_raw,
+        "balanced_accuracy": cal_bal,
+    }
+
+
 def _gathering(reason, scored, featured):
     n_rain = sum(y for _, y in scored)
     return {
@@ -341,25 +397,27 @@ def train_calibration(entries, trained_at=None):
     calibrated = {"platt": platt_full, "threshold": None,
                   "weights": None, "feature_means": None,
                   "feature_stds": None, "feature_keys": FEATURE_KEYS}
+    challenger = None   # only built at the weights stage (needs the p24h feature)
 
     if can_weights:
         stage, stage_index = "weights", 3
-        X = [x for x, _ in featured]
-        y = [yy for _, yy in featured]
-        Z, means, stds = _standardize_cols(X)
-        # Pick L2 by LOO balanced accuracy over a small grid.
-        best = None
-        for l2 in (0.1, 0.5, 1.0, 2.0, 5.0):
-            raw, bal = _loo_weights(featured, l2)
-            key = (bal if bal is not None else -1, raw if raw is not None else -1)
-            if best is None or key > best[0]:
-                best = (key, l2, raw, bal)
-        _, l2_best, cal_raw, cal_bal = best
-        w, b = _fit_logistic(Z, y, l2=l2_best)
-        calibrated["weights"] = {"coef": w, "bias": b, "l2": l2_best}
-        calibrated["feature_means"] = means
-        calibrated["feature_stds"] = stds
+        # Champion: the 4 forecast features.
+        champ = _weights_model(featured, FEATURE_KEYS, platt_full)
+        calibrated["weights"] = champ["weights"]
+        calibrated["feature_means"] = champ["feature_means"]
+        calibrated["feature_stds"] = champ["feature_stds"]
+        calibrated["feature_keys"] = champ["feature_keys"]
+        cal_raw, cal_bal = champ["accuracy"], champ["balanced_accuracy"]
         next_unlock = None
+
+        # Challenger: champion features + corridor p24h. Trained on the (usually
+        # smaller) subset of entries that also carry station snapshots.
+        featured_ch = _featured_dataset(entries, CHALLENGER_FEATURE_KEYS)
+        rained_ch = sum(y for _, y in featured_ch)
+        if len(featured_ch) >= MIN_FEAT_CHALLENGER and rained_ch >= MIN_RAINED_CHALLENGER:
+            challenger = _weights_model(featured_ch, CHALLENGER_FEATURE_KEYS, platt_full)
+            challenger["n_featured"] = len(featured_ch)
+            challenger["n_rained"] = rained_ch
     elif can_prob:
         stage, stage_index = "probability", 2
         cal_raw, cal_bal = _loo_platt(scored)
@@ -376,6 +434,21 @@ def train_calibration(entries, trained_at=None):
     calibrated["accuracy"] = cal_raw
     calibrated["balanced_accuracy"] = cal_bal
 
+    # Champion selection. The learned model now drives the decision (was shadow-
+    # only). Promote the challenger over the base calibrated model when it wins
+    # on LOO balanced accuracy by a margin AND has an adequate rain sample.
+    # Caveat: the two LOO scores are computed on different-sized datasets (the
+    # challenger's p24h subset lags the main log), so the comparison isn't fully
+    # apples-to-apples until the challenger catches up — which is what the
+    # PROMOTION_MIN_RAINED gate waits for before allowing a takeover.
+    champion = "calibrated"
+    if (challenger is not None
+            and challenger.get("n_rained", 0) >= PROMOTION_MIN_RAINED
+            and challenger.get("balanced_accuracy") is not None
+            and cal_bal is not None
+            and challenger["balanced_accuracy"] >= cal_bal + PROMOTION_MARGIN):
+        champion = "challenger"
+
     state = {
         "stage": stage,
         "stage_index": stage_index,
@@ -386,8 +459,9 @@ def train_calibration(entries, trained_at=None):
         "baseline": {"threshold": BASELINE_THRESHOLD,
                      "accuracy": base_raw, "balanced_accuracy": base_bal},
         "calibrated": calibrated,
+        "challenger": challenger,
         "next_unlock": next_unlock,
-        "champion": "hand_tuned",   # shadow mode; future toggle flips to "calibrated"
+        "champion": champion,
         "model_version": 1,
     }
     if trained_at:
@@ -399,20 +473,42 @@ def train_calibration(entries, trained_at=None):
 # Inference — what would the shadow model say for the current prediction?
 # ====================================================================
 
-def apply_calibration(cal_state, score, features):
-    """Given the trained calibration state, the current hand-tuned score, and
-    the current feature vector (or None), return the shadow prediction:
+def champion_model(cal_state):
+    """Return (model_dict, model_name) for the champion the decision should use.
+    Falls back to the base calibrated model if the pointer is missing/unknown.
+    (model_dict, None) style not used — name is 'calibrated'/'challenger'.)"""
+    name = (cal_state or {}).get("champion")
+    if name == "challenger" and cal_state.get("challenger"):
+        return cal_state["challenger"], "challenger"
+    return (cal_state or {}).get("calibrated") or {}, "calibrated"
+
+
+def apply_calibration(cal_state, score, feature_map=None):
+    """Given the trained calibration state, the current hand-tuned score, and a
+    feature_map {feature_key: value} for the current prediction (or None),
+    return the champion model's prediction:
 
         {shadow_decision: "YES"|"NO", shadow_prob_rain: float|None,
-         shadow_basis: str, stage: str}
+         shadow_basis: str, stage: str, model: "calibrated"|"challenger"}
 
-    Returns None if there's no usable model yet (gathering)."""
+    "shadow_*" keys are kept for backward compatibility with the frontend; this
+    is now the champion (decision-driving) model unless champion == hand_tuned.
+    Returns None if there's no usable model yet (gathering / hand_tuned)."""
     if not cal_state or cal_state.get("stage") == "gathering":
         return None
+    if cal_state.get("champion") == "hand_tuned":
+        return None
 
-    cal = cal_state.get("calibrated") or {}
+    cal, model_name = champion_model(cal_state)
     stage = cal_state.get("stage")
     platt = cal.get("platt")
+
+    # Build the champion's feature vector from the map, in its own feature order.
+    features = None
+    if feature_map is not None and cal.get("feature_keys"):
+        vals = [feature_map.get(k) for k in cal["feature_keys"]]
+        if all(isinstance(v, (int, float)) for v in vals):
+            features = [float(v) for v in vals]
 
     prob = None
     if stage == "weights" and cal.get("weights") and features is not None:
@@ -449,4 +545,5 @@ def apply_calibration(cal_state, score, features):
         "shadow_prob_rain": round(prob, 4) if prob is not None else None,
         "shadow_basis": basis,
         "stage": stage,
+        "model": model_name,
     }

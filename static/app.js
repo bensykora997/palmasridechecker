@@ -736,7 +736,36 @@ function calibrationPanel(cal) {
   `;
 }
 
+// Last history payload, retained so an override can update the view from the
+// authoritative POST response instead of a stale blob re-read (see setOverride).
+let __historyData = null;
+
+function _recomputeHistoryStats(preds) {
+  const gt = p => {
+    const ov = p.user_override || {};
+    if (ov.rained != null) return !!ov.rained;
+    const a = p.actual || {};
+    if (a.rained != null) return !!a.rained;
+    return null;
+  };
+  const total = preds.length;
+  const evaluated = preds.filter(p => gt(p) !== null).length;
+  const correct = preds.filter(p => p.correct === true).length;
+  const wrong = preds.filter(p => p.correct === false).length;
+  const overridden = preds.filter(p => (p.user_override || {}).rained != null).length;
+  return {
+    total_predictions: total,
+    evaluated,
+    pending: total - evaluated,
+    correct,
+    wrong,
+    overridden,
+    accuracy_pct: evaluated ? Math.round(1000 * correct / evaluated) / 10 : null,
+  };
+}
+
 function renderHistory(data) {
+  __historyData = data;   // retain for optimistic override updates
   if (!data.enabled) {
     main.innerHTML = `
       <div class="card">
@@ -965,27 +994,41 @@ async function postOverride(rideDate, rained) {
   return data.entry;
 }
 
+// Ask for the password once per session, then remember it — repeated marks
+// shouldn't re-block with a dialog each time.
+let __overrideAuthed = false;
+
 async function setOverride(rideDate, rained) {
-  const pw = prompt(t("token_prompt"));
-  if (pw === null) return;          // user hit Cancel
-  if (pw !== OVERRIDE_PASSWORD) {
-    alert(t("token_wrong"));
-    return;
+  if (!__overrideAuthed) {
+    const pw = prompt(t("token_prompt"));
+    if (pw === null) return;          // user hit Cancel
+    if (pw !== OVERRIDE_PASSWORD) {
+      alert(t("token_wrong"));
+      return;
+    }
+    __overrideAuthed = true;
   }
   const entry = await postOverride(rideDate, rained);
-  if (entry) {
-    await loadHistory();
+  if (!entry) return;                 // failure already surfaced by postOverride
+
+  // Render from the authoritative server response, NOT a fresh /api/history
+  // fetch: Vercel Blob's CDN can serve a stale, override-less copy for up to
+  // ~60s after the write, which made overrides look like they "did nothing."
+  // set_override/clear_override return the entry only after a committed write,
+  // so this can never get ahead of persisted state.
+  if (__historyData && Array.isArray(__historyData.predictions)) {
+    const preds = __historyData.predictions;
+    const i = preds.findIndex(p => p.ride_date === rideDate);
+    if (i >= 0) preds[i] = entry;     // full updated record (override cleared → no user_override key)
+    __historyData.stats = _recomputeHistoryStats(preds);
+    renderHistory(__historyData);
+  } else {
+    await loadHistory();              // first-load edge case: nothing retained yet
   }
 }
 
 function clearOverride(rideDate) {
   return setOverride(rideDate, null);
-}
-
-function toggleHistoryRow(rideDate) {
-  const el = document.querySelector(`[data-history-row="${rideDate}"]`);
-  if (!el) return;
-  el.classList.toggle("expanded");
 }
 
 // Apply persisted language preference to the page chrome before first fetch

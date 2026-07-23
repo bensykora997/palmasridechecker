@@ -404,9 +404,6 @@ body {
 }
 
 .history-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   padding: 0.75rem 0;
   border-bottom: 1px solid var(--border);
 }
@@ -630,7 +627,6 @@ body {
 /* ---------- History row expand + override controls ---------- */
 
 .history-row {
-  cursor: pointer;
   transition: background 0.15s;
 }
 
@@ -663,6 +659,7 @@ body {
 .override-btn {
   flex: 1;
   min-width: 5rem;
+  min-height: 2.75rem;
   padding: 0.45rem 0.6rem;
   border: 1px solid var(--border);
   border-radius: 0.6rem;
@@ -670,6 +667,7 @@ body {
   color: var(--text);
   font-size: 0.78rem;
   cursor: pointer;
+  touch-action: manipulation;
   transition: border-color 0.15s, background 0.15s;
   font-family: inherit;
 }

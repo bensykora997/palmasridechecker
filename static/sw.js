@@ -9,7 +9,7 @@
  *
  * Bump CACHE_VERSION whenever the shell assets change to evict the old cache.
  */
-const CACHE_VERSION = "palmas-v2";
+const CACHE_VERSION = "palmas-v3";
 const SHELL = [
   "/",
   "/index.html",

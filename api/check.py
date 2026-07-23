@@ -44,6 +44,36 @@ def _summarize_forecast(open_meteo):
     return round(avg_prob, 1), round(max_wind, 1), round(avg_hum, 1), round(overnight, 2)
 
 
+def _confidence_from_prob(prob):
+    """Map P(rain) distance from the 0.5 cutoff to a confidence bucket."""
+    if prob is None:
+        return "low"
+    d = abs(prob - 0.5)
+    return "high" if d >= 0.3 else ("medium" if d >= 0.12 else "low")
+
+
+def _champion_view(cal_state, heuristic_score, feature_map):
+    """The learned champion model's decision for the current prediction, or None
+    when the champion is hand_tuned / calibration is still gathering.
+
+    Returns {decision, confidence, score, model_out}. `score` is a 0-100 ride
+    score derived from P(rain) so the whole UI (banner/emoji/color) stays
+    coherent with the model's verdict; the hand-tuned score is shown separately."""
+    model_out = calibrate.apply_calibration(cal_state, heuristic_score, feature_map)
+    if not model_out:
+        return None
+    prob = model_out.get("shadow_prob_rain")
+    # Ride score = inverse of rain probability. If no probability (threshold
+    # stage), fall back to the hand-tuned score so the banner still renders.
+    score = round(100 * (1 - prob)) if prob is not None else heuristic_score
+    return {
+        "decision": model_out["shadow_decision"],
+        "confidence": _confidence_from_prob(prob),
+        "score": score,
+        "model_out": model_out,
+    }
+
+
 def build_result():
     pluvio = fetch_pluviometrica()
     radar = fetch_radar()
@@ -58,10 +88,44 @@ def build_result():
     road = analyze_road_conditions(open_meteo, station_analysis)
     result = compute_score(open_meteo, station_analysis, radar_analysis, wrf_analysis, time_window, road)
 
+    # --- Learned champion model drives the shown decision (falls back to the
+    # hand-tuned heuristic when calibration is unavailable / still gathering).
+    avg_prob, max_wind, avg_hum, overnight = _summarize_forecast(open_meteo)
+    snaps = backfill.station_snapshots(pluvio)
+    _p24h = [s.get("p24h") for s in snaps if isinstance(s.get("p24h"), (int, float))]
+    feature_map = {
+        "avg_precip_prob": avg_prob,
+        "max_wind": max_wind,
+        "avg_humidity": avg_hum,
+        "overnight_precip_mm": overnight,
+        "p24h": max(_p24h) if _p24h else None,
+    }
+    champ = None
+    try:
+        if db.is_enabled():
+            cal_state = db.read_calibration()
+            champ = _champion_view(cal_state, result["score"], feature_map)
+    except Exception as e:
+        print(f"[calibration] champion decision skipped: {e}")
+
+    decided_by = "model" if champ else "hand_tuned"
+    decision = champ["decision"] if champ else result["decision"]
+    score = champ["score"] if champ else result["score"]
+    confidence = champ["confidence"] if champ else result["confidence"]
+    shadow = champ["model_out"] if champ else None
+
     response = {
-        "decision": result["decision"],
-        "score": result["score"],
-        "confidence": result["confidence"],
+        "decision": decision,
+        "score": score,
+        "confidence": confidence,
+        # Which engine produced the verdict, and the hand-tuned heuristic's own
+        # call — shown as a secondary line and kept as the ongoing baseline.
+        "decided_by": decided_by,
+        "heuristic": {
+            "decision": result["decision"],
+            "score": result["score"],
+            "confidence": result["confidence"],
+        },
         "best_window": (
             {"start": time_window["start"], "end": time_window["end"]}
             if time_window.get("found") else None
@@ -126,30 +190,20 @@ def build_result():
         },
     }
 
+    # The champion model's output (or None) — surfaced for the UI and recorded on
+    # the entry for the model's own track record. Computed above with the decision.
+    response["calibration_shadow"] = shadow
+
     # Best-effort logging: never block the response on a DB failure.
     try:
         if db.is_enabled():
             db.init_schema()
-            avg_prob, max_wind, avg_hum, overnight = _summarize_forecast(open_meteo)
-            station_snapshots = backfill.station_snapshots(pluvio)
-
-            # Shadow prediction from the stored calibration model (read-only
-            # here; the cron retrains nightly). Surfaced in the response and
-            # recorded on the entry for the shadow model's own track record.
-            shadow = None
-            try:
-                cal_state = db.read_calibration()
-                feats = [avg_prob, max_wind, avg_hum, overnight]
-                if any(f is None for f in feats):
-                    feats = None
-                shadow = calibrate.apply_calibration(cal_state, result["score"], feats)
-            except Exception as e:
-                print(f"[calibration] shadow skipped: {e}")
-            response["calibration_shadow"] = shadow
 
             # A pre-dawn ("this morning") view re-scores today's ride; log it
             # as an observation only — the night-before canonical prediction
-            # stays frozen and is what calibration grades.
+            # stays frozen and is what calibration grades. The LOGGED score is
+            # always the hand-tuned score (the calibration baseline + platt/
+            # threshold stages grade it); the model-derived display score is not.
             is_morning = get_framing() == "this_morning"
             db.save_prediction(
                 ride_date=get_target_date(),
@@ -161,7 +215,7 @@ def build_result():
                 forecast_max_wind=max_wind,
                 forecast_avg_humidity=avg_hum,
                 forecast_overnight_precip_mm=overnight,
-                station_snapshots=station_snapshots,
+                station_snapshots=snaps,
                 shadow=shadow,
                 morning=is_morning,
             )

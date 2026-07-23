@@ -88,16 +88,22 @@ def run_cron():
         # it can't clobber the night-before canonical prediction.
         is_morning = get_framing() == "this_morning"
 
-        # Shadow prediction: what the calibration model (as trained on prior
-        # nights) would say for this same forecast. Recorded so the shadow
-        # model accrues its own real-time track record.
+        # Champion model prediction: what the learned champion (as trained on
+        # prior nights) says for this same forecast. Recorded so the model
+        # accrues its own real-time track record.
+        snaps = backfill.station_snapshots(pluvio)
+        _p24h = [s.get("p24h") for s in snaps if isinstance(s.get("p24h"), (int, float))]
+        feature_map = {
+            "avg_precip_prob": avg_prob,
+            "max_wind": max_wind,
+            "avg_humidity": avg_hum,
+            "overnight_precip_mm": overnight,
+            "p24h": max(_p24h) if _p24h else None,
+        }
         shadow = None
         try:
             cal_state = db.read_calibration()
-            feats = [avg_prob, max_wind, avg_hum, overnight]
-            if any(f is None for f in feats):
-                feats = None
-            shadow = calibrate.apply_calibration(cal_state, scored["score"], feats)
+            shadow = calibrate.apply_calibration(cal_state, scored["score"], feature_map)
         except Exception as e:
             result["errors"].append(f"shadow: {e}")
 
@@ -111,7 +117,7 @@ def run_cron():
             forecast_max_wind=max_wind,
             forecast_avg_humidity=avg_hum,
             forecast_overnight_precip_mm=overnight,
-            station_snapshots=backfill.station_snapshots(pluvio),
+            station_snapshots=snaps,
             shadow=shadow,
             morning=is_morning,
         )
