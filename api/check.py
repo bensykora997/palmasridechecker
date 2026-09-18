@@ -18,6 +18,10 @@ import db
 import calibrate
 import backfill
 
+# The route geometry is static — build the response payload once at import
+# instead of rebuilding the ~1883-point nested list on every /api/check.
+_ROUTE_SEGMENTS_PAYLOAD = [[[lat, lon] for lat, lon in seg] for seg in PALMAS_ROUTE_SEGMENTS]
+
 
 def _summarize_forecast(open_meteo):
     """Pull the headline forecast inputs the model used."""
@@ -185,7 +189,7 @@ def build_result():
                 }
                 for s in pluvio.get("stations", [])
             ],
-            "route_segments": [[[lat, lon] for lat, lon in seg] for seg in PALMAS_ROUTE_SEGMENTS],
+            "route_segments": _ROUTE_SEGMENTS_PAYLOAD,
             "air_quality": air,
         },
     }

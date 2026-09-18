@@ -32,6 +32,11 @@ import db
 import calibrate
 import backfill
 
+# Cap the calibration training window (days). Bounds the nightly retrain's CPU as
+# the prediction log grows — older days add little signal (recent climate is what
+# matters), and training is now cron-only.
+MAX_TRAIN_DAYS = 365
+
 
 def _summarize_forecast(open_meteo):
     if not open_meteo.get("available") or not open_meteo.get("hours"):
@@ -158,10 +163,14 @@ def run_cron():
     except Exception as e:
         result["errors"].append(f"backfill: {e}")
 
-    # 3) Retrain the shadow calibration model on the full (now-updated) log.
+    # 3) Retrain the calibration model on a bounded recent window of the log.
+    # Capping to MAX_TRAIN_DAYS keeps retrain CPU flat as the log grows.
     try:
+        from datetime import timedelta
         from timeutil import now_bogota
-        entries = db._read_all().get("predictions", [])
+        cutoff = (now_bogota().date() - timedelta(days=MAX_TRAIN_DAYS)).isoformat()
+        entries = [e for e in db._read_all().get("predictions", [])
+                   if e.get("ride_date", "") >= cutoff]
         cal = calibrate.train_calibration(
             entries, trained_at=now_bogota().isoformat(timespec="seconds"))
         db.write_calibration(cal)

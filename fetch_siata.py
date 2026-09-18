@@ -23,6 +23,44 @@ def _distance_to_route_km(lat, lon):
     """Min distance from a point to any waypoint along the Palmas route."""
     return min(_haversine_km(lat, lon, wlat, wlon) for wlat, wlon in PALMAS_ROUTE)
 
+
+# --- Corridor distance: cheap pre-filter + memoization -------------------
+# Every /api/check filtered ~228 SIATA stations against all ~1883 route
+# waypoints (~429k haversine calls/request), recomputed each time. The route
+# and station coordinates are static, so: (1) a bounding-box test rejects
+# far-away stations in O(1) before any haversine, and (2) results are memoized
+# by station code so a warm serverless instance pays ~0. This is the per-request
+# half of the Vercel Fluid CPU fix.
+_ROUTE_BBOX = (
+    min(p[0] for p in PALMAS_ROUTE), max(p[0] for p in PALMAS_ROUTE),
+    min(p[1] for p in PALMAS_ROUTE), max(p[1] for p in PALMAS_ROUTE),
+)
+# Pad the bbox by the widest radius we ever query (the 2x fallback), so the
+# pre-filter can never reject a station that could legitimately be in range.
+_BBOX_PAD_KM = CORRIDOR_RADIUS_KM * 2
+_DIST_CACHE = {}
+
+
+def _bbox_too_far(lat, lon):
+    """True if (lat,lon) is outside the padded route bounding box — i.e. it
+    cannot be within range, so the full waypoint scan can be skipped."""
+    dlat = _BBOX_PAD_KM / 111.0
+    coslat = abs(math.cos(math.radians(lat))) or 1e-6
+    dlon = _BBOX_PAD_KM / (111.0 * coslat)
+    mnlat, mxlat, mnlon, mxlon = _ROUTE_BBOX
+    return (lat < mnlat - dlat or lat > mxlat + dlat
+            or lon < mnlon - dlon or lon > mxlon + dlon)
+
+
+def _station_route_distance(code, lat, lon):
+    """Memoized min-distance from a station to the route (inf if bbox-rejected)."""
+    key = code if code is not None else (round(lat, 5), round(lon, 5))
+    d = _DIST_CACHE.get(key)
+    if d is None:
+        d = float("inf") if _bbox_too_far(lat, lon) else _distance_to_route_km(lat, lon)
+        _DIST_CACHE[key] = d
+    return d
+
 # Relaxed SSL context for SIATA endpoints
 _ctx = ssl.create_default_context()
 _ctx.check_hostname = False
@@ -139,15 +177,7 @@ def fetch_pluviometrica():
     if not data or "estaciones" not in data:
         return {"stations": [], "available": False}
 
-    def near_route(s, radius_km):
-        try:
-            lat = float(s.get("latitud", 0))
-            lon = float(s.get("longitud", 0))
-        except (TypeError, ValueError):
-            return False
-        return _distance_to_route_km(lat, lon) <= radius_km
-
-    def normalize(s):
+    def normalize(s, dist):
         lat = float(s.get("latitud", 0))
         lon = float(s.get("longitud", 0))
         return {
@@ -158,18 +188,30 @@ def fetch_pluviometrica():
             "value": float(s.get("valor", -999)),
             "neighborhood": s.get("barrio", ""),
             "city": s.get("ciudad", ""),
-            "distance_km": round(_distance_to_route_km(lat, lon), 2),
+            "distance_km": round(dist, 2),
         }
 
-    nearby = [s for s in data["estaciones"] if near_route(s, CORRIDOR_RADIUS_KM)]
+    # Compute each station's route distance exactly once (bbox pre-filtered +
+    # memoized), then filter by radius — instead of recomputing it in both the
+    # radius test and normalize, and again for the 2x fallback.
+    scored = []
+    for s in data["estaciones"]:
+        try:
+            lat = float(s.get("latitud", 0))
+            lon = float(s.get("longitud", 0))
+        except (TypeError, ValueError):
+            continue
+        scored.append((s, _station_route_distance(s.get("codigo"), lat, lon)))
+
+    nearby = [(s, d) for s, d in scored if d <= CORRIDOR_RADIUS_KM]
     expanded = False
     # Fallback: if nothing within the corridor, widen to 2x radius rather
     # than silently returning zero stations.
     if not nearby:
-        nearby = [s for s in data["estaciones"] if near_route(s, CORRIDOR_RADIUS_KM * 2)]
+        nearby = [(s, d) for s, d in scored if d <= CORRIDOR_RADIUS_KM * 2]
         expanded = True
 
-    stations = [normalize(s) for s in nearby]
+    stations = [normalize(s, d) for s, d in nearby]
 
     # Enrich every corridor station with its detail file (p10m/p1h/p24h).
     # This is what lets us detect rain that the summary `valor` snapshot

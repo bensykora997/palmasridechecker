@@ -270,15 +270,35 @@ def _platt_prob(platt, score):
     return _sigmoid(platt["a"] * z + platt["b"])
 
 
-def _loo_platt(data):
+# Cross-validation folds. Leave-one-out on small data (cheap, low variance),
+# but 5-fold once n is large enough that LOO's O(n^2) refits would dominate CPU
+# — this is what keeps the nightly retrain's cost bounded as the prediction log
+# grows (the Vercel Fluid CPU-spike fix). Deterministic index-stride folds.
+_CV_FOLDS = 5
+_CV_LOO_MAX = 24     # n <= this uses leave-one-out; above, 5-fold
+
+
+def _cv_splits(n):
+    """Yield each fold's list of held-out indices."""
+    if n <= _CV_LOO_MAX:
+        for i in range(n):
+            yield [i]
+    else:
+        for f in range(_CV_FOLDS):
+            yield [i for i in range(n) if i % _CV_FOLDS == f]
+
+
+def _cv_platt(data):
     n = len(data)
     preds, labels = [], []
-    for i in range(n):
-        rest = data[:i] + data[i + 1:]
+    for test in _cv_splits(n):
+        ts = set(test)
+        rest = [data[i] for i in range(n) if i not in ts]
         platt = _fit_platt([s for s, _ in rest], [y for _, y in rest])
-        s_i, y_i = data[i]
-        preds.append(_platt_prob(platt, s_i) >= RIDE_PROB_CUTOFF)
-        labels.append(y_i)
+        for i in test:
+            s_i, y_i = data[i]
+            preds.append(_platt_prob(platt, s_i) >= RIDE_PROB_CUTOFF)
+            labels.append(y_i)
     return _accuracies(preds, labels)
 
 
@@ -286,20 +306,22 @@ def _loo_platt(data):
 # Stage 2 — feature weights
 # ====================================================================
 
-def _loo_weights(data, l2):
+def _cv_weights(data, l2):
     n = len(data)
     preds, labels = [], []
-    for i in range(n):
-        rest = data[:i] + data[i + 1:]
+    for test in _cv_splits(n):
+        ts = set(test)
+        rest = [data[i] for i in range(n) if i not in ts]
         X = [x for x, _ in rest]
         y = [yy for _, yy in rest]
         Z, means, stds = _standardize_cols(X)
         w, b = _fit_logistic(Z, y, l2=l2)
-        x_i, y_i = data[i]
-        z_i = _apply_standardize(x_i, means, stds)
-        p = _sigmoid(b + sum(w[j] * z_i[j] for j in range(len(w))))
-        preds.append(p >= RIDE_PROB_CUTOFF)
-        labels.append(y_i)
+        for i in test:
+            x_i, y_i = data[i]
+            z_i = _apply_standardize(x_i, means, stds)
+            p = _sigmoid(b + sum(w[j] * z_i[j] for j in range(len(w))))
+            preds.append(p >= RIDE_PROB_CUTOFF)
+            labels.append(y_i)
     return _accuracies(preds, labels)
 
 
@@ -319,7 +341,7 @@ def _weights_model(featured_k, feature_keys, platt_full):
     given feature_keys. Returns a self-contained model dict (same shape as the
     `calibrated` block) with LOO metrics, or None if featured_k is empty.
 
-    L2 is chosen by LOO balanced accuracy over a small grid (same as before)."""
+    L2 is chosen by cross-validated balanced accuracy over a small grid."""
     if not featured_k:
         return None
     X = [x for x, _ in featured_k]
@@ -327,7 +349,7 @@ def _weights_model(featured_k, feature_keys, platt_full):
     Z, means, stds = _standardize_cols(X)
     best = None
     for l2 in (0.1, 0.5, 1.0, 2.0, 5.0):
-        raw, bal = _loo_weights(featured_k, l2)
+        raw, bal = _cv_weights(featured_k, l2)
         key = (bal if bal is not None else -1, raw if raw is not None else -1)
         if best is None or key > best[0]:
             best = (key, l2, raw, bal)
@@ -425,7 +447,7 @@ def train_calibration(entries, trained_at=None):
             challenger["n_rained"] = rained_ch
     elif can_prob:
         stage, stage_index = "probability", 2
-        cal_raw, cal_bal = _loo_platt(scored)
+        cal_raw, cal_bal = _cv_platt(scored)
         next_unlock = {"stage": "weights", "at_featured": MIN_FEAT_WEIGHTS,
                        "needs_rained": MIN_RAINED_WEIGHTS}
     else:
